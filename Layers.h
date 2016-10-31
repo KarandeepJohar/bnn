@@ -1,4 +1,5 @@
 #include<iostream>
+#include <limits>
 #include "Halide.h"
 
 using namespace Halide;
@@ -432,8 +433,10 @@ class MaxPooling: public Layer {
             //
             // the code should define: forward(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
-
-            forward(x, y, z, n) = 0.f;
+            RDom r(0, p_w, 0, p_h);
+            forward(x, y, z, n) = maximum(f_in_bound(x * stride + r.x - pad,
+                                                 y * stride + r.y - pad,
+                                                 z, n));
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
