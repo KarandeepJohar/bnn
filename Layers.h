@@ -597,8 +597,10 @@ class SoftMax: public Layer {
             //
             // Code should define forward(in_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
+            RDom r(0, num_classes);
+            // forward(in_dim, n) = 0.f;
+            forward(in_dim, n) = -in_f(in_dim, n) + log(sum(exp(in_f(r.x, n))));
 
-            forward(in_dim, n) = 0.f;
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
