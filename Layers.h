@@ -157,8 +157,11 @@ class Affine: public Layer {
             //
             // The code should define forward(unit_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
+            RDom r(0, num_inputs);
+            forward(unit_dim, n) = sum(W(r.x, unit_dim) * in_f(r.x, n));
+            forward(unit_dim, n) += b(unit_dim);
 
-            forward(unit_dim, n) = 0;
+
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
