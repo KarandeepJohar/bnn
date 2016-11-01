@@ -158,8 +158,8 @@ class Affine: public Layer {
             // The code should define forward(unit_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
             RDom r(0, num_inputs);
-            forward(unit_dim, n) = sum(W(r.x, unit_dim) * in_f(r.x, n));
-            forward(unit_dim, n) += b(unit_dim);
+            forward(unit_dim, n) = sum(params[0](r.x, unit_dim) * in_f(r.x, n));
+            forward(unit_dim, n) += params[1](unit_dim);
 
 
 
@@ -301,8 +301,11 @@ class Convolutional: public Layer {
             // Code should define forward(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
 
-            forward(x, y, z, n) = 0.f;
-
+            RDom r(0, f_w, 0, f_h, 0, in_ch);
+            forward(x, y, z, n) = sum(f_in_bound(x * stride + r.x - pad,
+                                                 y * stride + r.y - pad,
+                                                 r.z, n) * params[0](r.x, r.y, r.z, z));
+            forward(x,y,z,n) += params[1](z);
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
                 f_in_bound.compute_root();
@@ -602,7 +605,7 @@ class SoftMax: public Layer {
             ////////////////////////////////////////////////////////////////////
             RDom r(0, num_classes);
             // forward(in_dim, n) = 0.f;
-            forward(in_dim, n) = -in_f(in_dim, n) + log(sum(exp(in_f(r.x, n))));
+            forward(in_dim, n) = exp(in_f(in_dim, n))/sum(exp(in_f(r.x, n)));
 
 
             if (schedule) {
