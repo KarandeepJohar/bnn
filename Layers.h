@@ -138,6 +138,8 @@ class Affine: public Layer {
         // Halide variables
         Var in_dim, unit_dim, n;
 
+        Var par;
+
          Affine(std::string _name, int _num_units, Layer* in,
                bool schedule = true) : Layer(_name, in) {
 
@@ -158,14 +160,14 @@ class Affine: public Layer {
             // The code should define forward(unit_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
             RDom r(0, num_inputs);
-            forward(unit_dim, n) = sum(params[0](r.x, unit_dim) * in_f(r.x, n));
-            forward(unit_dim, n) += params[1](unit_dim);
-
-
+            forward(unit_dim, n) = b(unit_dim);
+            forward(unit_dim, n) += (W(r.x, unit_dim) * in_f(r.x, n));
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
-                forward.compute_root();
+                // forward.compute_root();
+                forward.compute_root().fuse(unit_dim, n, par).parallel(par);                    
+                forward.update().fuse(unit_dim, n, par).parallel(par);  
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -205,10 +207,13 @@ class Affine: public Layer {
             RDom r1(0, num_units);
             RDom r2(0, num_samples);
             Func in_f = inputs[0]->forward;
-
-            in_grad(in_dim, n) = sum(W(in_dim, r1.x)*dout(r1.x, n));
-            dW(in_dim, unit_dim) = sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
-            db(unit_dim) = sum(dout(unit_dim, r2.x));
+            // in_f = in_grad = 128 x 10
+            // dout = 32 x 10
+            // W = dW = 128 x 32
+            // unit_dim = num_units = 32, in_dim = 128
+            in_grad(in_dim, n) += (W(in_dim, r1.x)*dout(r1.x, n));
+            dW(in_dim, unit_dim) += (dout(unit_dim, r2.x)*in_f(in_dim, r2.x));//sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
+            db(unit_dim) += (dout(unit_dim, r2.x));
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
@@ -267,6 +272,10 @@ class Convolutional: public Layer {
         // padded input to avoid bounds check during the computation
         Func f_in_bound;
 
+        Var y_t, z_t, par;
+        int o_block_size = 16;
+        int y_block_size = 32;
+        int vec_len = 8;
         Convolutional(std::string _name, int _num_f, int _f_w, int _f_h,
                       int _pad, int _stride, Layer* in,
                       bool schedule=true) : Layer(_name, in) {
@@ -305,14 +314,35 @@ class Convolutional: public Layer {
             ////////////////////////////////////////////////////////////////////
 
             RDom r(0, f_w, 0, f_h, 0, in_ch);
-            forward(x, y, z, n) = sum(f_in_bound(x * stride + r.x - pad,
+            forward(x,y,z,n) = b(z);
+            forward(x, y, z, n) += (f_in_bound(x * stride + r.x - pad,
                                                  y * stride + r.y - pad,
-                                                 r.z, n) * params[0](r.x, r.y, r.z, z));
-            forward(x,y,z,n) += params[1](z);
+                                                 r.z, n) * W(r.x, r.y, r.z, z));
             if (schedule) {
+
                 // put schedule here (if scheduling layers independently)
-                f_in_bound.compute_root();
+                // f_in_bound.compute_root();
+                // forward.compute_root();
+
+                forward.update().reorder(y, x, r.z);
+                // blocking spatially with vectorization
+                //f_in_bound.compute_at(f_simple, n);
                 forward.compute_root();
+                forward.fuse(z, n, par).parallel(par);
+                forward.update().reorder(x, y, r.z); 
+                forward.update().split(y, y, y_t, y_block_size);
+                forward.update().split(z, z, z_t, o_block_size);
+                forward.update().reorder(y_t, z_t, y, r.z, z); 
+                forward.update().vectorize(x, vec_len);          
+                forward.update().fuse(z, n, par).parallel(par);
+                //forward.update().fuse(y, par, par).parallel(par);
+                forward.update().unroll(r.x);
+                forward.update().unroll(r.y);
+                // There are performance implications to this and seems to
+                // be incompatible with some schedules. Have to investigate
+                // this more closely.
+                //f_in_bound.compute_at(forward, n);
+                f_in_bound.compute_at(forward, z_t);
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -334,8 +364,8 @@ class Convolutional: public Layer {
             Func in_grad(name + "_in_grad");
             Func dW(name + "_dW"), db(name + "_db");
 
-            //int out_w = this->out_dim_size(0);
-            //int out_h = this->out_dim_size(1);
+            int out_w = this->out_dim_size(0);
+            int out_h = this->out_dim_size(1);
 
             Image<float> W = params[0];
             Image<float> b = params[1];
@@ -358,27 +388,25 @@ class Convolutional: public Layer {
             //                    db(x) = ...
             //                    in_grad(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
-
+            RDom r1(0, out_w, 0, out_h, 0, num_samples);
 
             dW(x, y, z, n) = 0.f;
             db(x) = 0.f;
-            dW(x, y, z, n) = cast(dout.output_types()[0],
-                                   W(x, y, z, n));
             dW(x, y, z, n) += dout(r1.x, r1.y, n, r1.z) *
-                              forward_clamp
-                      (r1.x * stride + x - pad,
+                              f_in_bound(r1.x * stride + x - pad,
                                          r1.y * stride + y - pad,
                                          z, r1.z);
             // intialize to zero
-            db(x) = cast(dout.output_types()[0], 0);
+            // db(x) = cast(dout.output_types()[0], 0);
             db(x) += dout(r1.x, r1.y, x, r1.z);
 
             RDom r2(0, num_f);
             // intialize to zero
-            f_in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
-            f_in_grad(x, y, z, n) += dout(x, y, r2.x, n) * W(x, y, z, r2.x);
+            in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+            // in_grad(x, y, z, n) = 0.f;
+            RDom r3(0, f_w, 0, f_h, 0, num_f);
 
-            in_layer->back_propagate(f_in_grad);
+            in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, z, r3.z);
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
                 dW.compute_root();
@@ -430,7 +458,8 @@ class MaxPooling: public Layer {
 
         // padded input to avoid need to check boundary conditions
         Func f_in_bound;
-
+        Var par;
+        int vec_len = 8;
         MaxPooling(std::string _name, int _p_w, int _p_h, int _stride,
                    int _pad, Layer* in, bool schedule = true) : Layer(_name, in) {
             assert(inputs[0]->out_dims() == 4);
@@ -464,8 +493,12 @@ class MaxPooling: public Layer {
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
-                f_in_bound.compute_root();
-                forward.compute_root();
+                // f_in_bound.compute_root();
+                // forward.compute_root();
+
+
+                forward.vectorize(x, vec_len);
+                forward.compute_root().fuse(z, n, par).parallel(par);
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -494,16 +527,20 @@ class MaxPooling: public Layer {
             ////////////////////////////////////////////////////////////////////
 
             // in_grad(x, y, z, n) = 0.f;
+            Func pool_argmax;
+
             RDom r(0, p_w, 0, p_h);
-            pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x - pad,
-                                                 y * stride + r.y - pad,
+            pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x,
+                                                 y * stride + r.y,
                                                  z, n));
 
             RDom r2(0, this->out_dim_size(0), 0, this->out_dim_size(1));
             in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
 
-            Expr x_bin = r2.x * stride + pool_argmax(r2.x, r2.y, z, n)[0]-pad;
-            Expr y_bin = r2.y * stride + pool_argmax(r2.x, r2.y, z, n)[1]-pad;
+            Expr x_bin = clamp(r2.x * stride +
+                               pool_argmax(r2.x, r2.y, z, n)[0]-pad, 0, in_w);
+            Expr y_bin = clamp(r2.y * stride +
+                               pool_argmax(r2.x, r2.y, z, n)[1]-pad, 0, in_h);
 
             in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
 
@@ -634,14 +671,22 @@ class SoftMax: public Layer {
             //
             // Code should define forward(in_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
-            RDom r(0, num_classes);
             // forward(in_dim, n) = 0.f;
-            forward(in_dim, n) = exp(in_f(in_dim, n))/sum(exp(in_f(r.x, n)));
-
+            Func exp_max, expo, normalizer;
+            RDom r(0, num_classes);
+            exp_max(n) = maximum(in_f(r.x, n));
+            expo(in_dim, n) = exp(in_f(in_dim, n) - exp_max(n));
+            normalizer(n) = cast(in_f.output_types()[0], 0);
+            normalizer(n) += expo(r.x, n);
+            forward(in_dim, n) = expo(in_dim, n)/normalizer(n);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
-                forward.compute_root();
+                exp_max.compute_at(forward, n);
+                expo.compute_at(forward, n);
+                normalizer.compute_at(forward, n);
+                forward.compute_root().parallel(n);
+                // forward.compute_root();
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -668,8 +713,10 @@ class SoftMax: public Layer {
             // Note there are no parameter derivatives since the
             // softMax has no learnable parameters.
             ////////////////////////////////////////////////////////////////////
-
-            in_grad(in_dim, n) = forward(in_dim, n) - select(labels(n)==in_dim, 1, 0);
+            Expr label = clamp(labels(n), 0, num_classes -1);
+            Expr t = (forward(in_dim, n) - 1)/num_samples;
+            Expr f = (forward(in_dim, n)/num_samples);
+            in_grad(in_dim, n) = select(in_dim == label, t, f);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
@@ -700,9 +747,12 @@ class SoftMax: public Layer {
             //
             // Code should define loss_p(x) = ...
             ////////////////////////////////////////////////////////////////////
-
-            loss_p(x) = -labels(x)*log(forward(labels(x), x));
-
+            RDom r(0, num_samples);
+            loss_p(x) = cast(forward.output_types()[0], 0);
+            // The clamp is necessary. Otherwise, halide will assume that the
+            // label can be anything during bounds inference.
+            loss_p(0) += -log(forward(clamp(labels(r.x), 0, num_classes - 1),
+                                      r.x)) / num_samples;
             ////////////////////////////////////////////////////////////////////
             // end student code here
             ////////////////////////////////////////////////////////////////////
@@ -937,7 +987,7 @@ class AvgPooling: public Layer {
                                                                0, in_w, 0, in_h);
             // define forward
             RDom r(0, p_w, 0, p_h);
-            forward(x, y, z, n) = sum(f_in_bound(x * stride + r.x - pad,
+            forward(x, y, z, n) += (f_in_bound(x * stride + r.x - pad,
                                                  y * stride + r.y - pad,
                                                  z, n)) / (p_w * p_h);
             if (schedule) {
