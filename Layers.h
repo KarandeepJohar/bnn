@@ -273,8 +273,9 @@ class Convolutional: public Layer {
         Func f_in_bound;
 
         Var y_t, z_t, par;
+        Halide::Var y_outer, y_inner, z_outer, z_inner;
         int o_block_size = 16;
-        int y_block_size = 32;
+        int y_block_size = 16;
         int vec_len = 8;
         Convolutional(std::string _name, int _num_f, int _f_w, int _f_h,
                       int _pad, int _stride, Layer* in,
@@ -321,28 +322,40 @@ class Convolutional: public Layer {
             if (schedule) {
 
                 // put schedule here (if scheduling layers independently)
-                // f_in_bound.compute_root();
-                // forward.compute_root();
-
-                forward.update().reorder(y, x, r.z);
-                // blocking spatially with vectorization
-                //f_in_bound.compute_at(f_simple, n);
+                f_in_bound.compute_root();
                 forward.compute_root();
-                forward.fuse(z, n, par).parallel(par);
-                forward.update().reorder(x, y, r.z); 
-                forward.update().split(y, y, y_t, y_block_size);
-                forward.update().split(z, z, z_t, o_block_size);
-                forward.update().reorder(y_t, z_t, y, r.z, z); 
+                forward.parallel(n);
+
+                forward.update().split(y, y_outer, y_inner, y_block_size).split(z, z_outer, z_inner, o_block_size);
+                forward.update().reorder(y_inner, z_inner, r.z, y_outer, z_outer); 
                 forward.update().vectorize(x, vec_len);          
-                forward.update().fuse(z, n, par).parallel(par);
-                //forward.update().fuse(y, par, par).parallel(par);
-                forward.update().unroll(r.x);
-                forward.update().unroll(r.y);
-                // There are performance implications to this and seems to
-                // be incompatible with some schedules. Have to investigate
-                // this more closely.
-                //f_in_bound.compute_at(forward, n);
-                f_in_bound.compute_at(forward, z_t);
+                forward.update().parallel(n);
+                forward.update().unroll(r.x).unroll(r.y);
+                printf("Pseudo-code for the schedule:\n");
+                        forward.print_loop_nest();
+                        printf("\n");
+
+                // f_in_bound.compute_at(forward, z_outer);
+                // forward.parallel(z);
+                // forward.update().reorder(y, x, r.z);
+                // // blocking spatially with vectorization
+                // //f_in_bound.compute_at(f_simple, n);
+                // forward.compute_root();
+                // forward.fuse(z, n, par).parallel(par);
+                // forward.update().reorder(x, y, r.z); 
+                // forward.update().split(y, y, y_t, y_block_size);
+                // forward.update().split(z, z, z_t, o_block_size);
+                // forward.update().reorder(y_t, z_t, y, r.z, z); 
+                // forward.update().vectorize(x, vec_len);          
+                // forward.update().fuse(z, n, par).parallel(par);
+                // //forward.update().fuse(y, par, par).parallel(par);
+                // forward.update().unroll(r.x);
+                // forward.update().unroll(r.y);
+                // // There are performance implications to this and seems to
+                // // be incompatible with some schedules. Have to investigate
+                // // this more closely.
+                // // f_in_bound.compute_at(forward, n);
+                // f_in_bound.compute_at(forward, z_t);
             }
 
             ////////////////////////////////////////////////////////////////////
