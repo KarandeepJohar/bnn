@@ -202,10 +202,13 @@ class Affine: public Layer {
             //                    dB(unit_dim) ...
             //                    in_grad(in_dim, n) ...
             ////////////////////////////////////////////////////////////////////
+            RDom r1(0, num_units);
+            RDom r2(0, num_samples);
+            Func in_f = inputs[0]->forward;
 
-            in_grad(in_dim, n) = 0.f;
-            dW(in_dim, unit_dim) = 0.f;
-            db(unit_dim) = 0.f;
+            in_grad(in_dim, n) = sum(W(in_dim, r1.x)*dout(r1.x, n));
+            dW(in_dim, unit_dim) = sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
+            db(unit_dim) = sum(dout(unit_dim, r2.x));
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
@@ -359,8 +362,23 @@ class Convolutional: public Layer {
 
             dW(x, y, z, n) = 0.f;
             db(x) = 0.f;
-            in_grad(x, y, z, n) = 0.f;
+            dW(x, y, z, n) = cast(dout.output_types()[0],
+                                   W(x, y, z, n));
+            dW(x, y, z, n) += dout(r1.x, r1.y, n, r1.z) *
+                              forward_clamp
+                      (r1.x * stride + x - pad,
+                                         r1.y * stride + y - pad,
+                                         z, r1.z);
+            // intialize to zero
+            db(x) = cast(dout.output_types()[0], 0);
+            db(x) += dout(r1.x, r1.y, x, r1.z);
 
+            RDom r2(0, num_f);
+            // intialize to zero
+            f_in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+            f_in_grad(x, y, z, n) += dout(x, y, r2.x, n) * W(x, y, z, r2.x);
+
+            in_layer->back_propagate(f_in_grad);
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
                 dW.compute_root();
@@ -475,7 +493,20 @@ class MaxPooling: public Layer {
             // The code should define in_grad() ...
             ////////////////////////////////////////////////////////////////////
 
-            in_grad(x, y, z, n) = 0.f;
+            // in_grad(x, y, z, n) = 0.f;
+            RDom r(0, p_w, 0, p_h);
+            pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x - pad,
+                                                 y * stride + r.y - pad,
+                                                 z, n));
+
+            RDom r2(0, this->out_dim_size(0), 0, this->out_dim_size(1));
+            in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+
+            Expr x_bin = r2.x * stride + pool_argmax(r2.x, r2.y, z, n)[0]-pad;
+            Expr y_bin = r2.y * stride + pool_argmax(r2.x, r2.y, z, n)[1]-pad;
+
+            in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
+
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
@@ -638,7 +669,7 @@ class SoftMax: public Layer {
             // softMax has no learnable parameters.
             ////////////////////////////////////////////////////////////////////
 
-            in_grad(in_dim, n) = 0.f;
+            in_grad(in_dim, n) = forward(in_dim, n) - select(labels(n)==in_dim, 1, 0);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
@@ -670,7 +701,7 @@ class SoftMax: public Layer {
             // Code should define loss_p(x) = ...
             ////////////////////////////////////////////////////////////////////
 
-            loss_p(x) = 0.f;
+            loss_p(x) = -labels(x)*log(forward(labels(x), x));
 
             ////////////////////////////////////////////////////////////////////
             // end student code here
