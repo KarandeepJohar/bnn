@@ -172,7 +172,7 @@ class Affine: public Layer {
 
                 forward.update().split(unit_dim, x_outer, x_inner, 8);
                 forward.update().split(n, y_outer, y_inner, 8);
-                forward.update().reorder(x_inner, y_inner, x_outer, y_outer).fuse(x_outer, y_outer, par).parallel(par);
+                forward.update().reorder(x_inner, y_inner, x_outer, y_outer).fuse(x_outer, y_outer, par).parallel(par).vectorize(x_inner, 8);
 
                 // fuse(unit_dim, n, par).parallel(par);  
             }
@@ -282,9 +282,9 @@ class Convolutional: public Layer {
         Var y_t, z_t, par;
         Halide::Var y_outer, y_inner, z_outer, z_inner, x_inner, x_outer;
         int o_block_size = 16;
-        int y_block_size = 16;
-        int x_block_size = 16;
-        int vec_len = 8;
+        int y_block_size = 8;
+        int x_block_size = 8;
+        int vec_len = 16;
         Convolutional(std::string _name, int _num_f, int _f_w, int _f_h,
                       int _pad, int _stride, Layer* in,
                       bool schedule=true) : Layer(_name, in) {
@@ -335,7 +335,7 @@ class Convolutional: public Layer {
                 forward.compute_root();
 
                 forward.update().split(y, y_outer, y_inner, y_block_size);//.split(x, x_outer, x_inner, x_block_size);
-                forward.update().reorder(r.x,r.y, x,y_inner,y_outer, r.z); 
+                forward.update().reorder(r.x,r.y, x, y_inner, r.z, y_outer); 
                 forward.update().vectorize(x, vec_len);          
                 forward.update().fuse(z,n, par).parallel(par);
                 forward.update().unroll(r.x).unroll(r.y);
@@ -343,27 +343,6 @@ class Convolutional: public Layer {
                         forward.print_loop_nest();
                         printf("\n");
 
-                // f_in_bound.compute_at(forward, z_outer);
-                // forward.parallel(z);
-                // forward.update().reorder(y, x, r.z);
-                // // blocking spatially with vectorization
-                // //f_in_bound.compute_at(f_simple, n);
-                // forward.compute_root();
-                // forward.fuse(z, n, par).parallel(par);
-                // forward.update().reorder(x, y, r.z); 
-                // forward.update().split(y, y, y_t, y_block_size);
-                // forward.update().split(z, z, z_t, o_block_size);
-                // forward.update().reorder(y_t, z_t, y, r.z, z); 
-                // forward.update().vectorize(x, vec_len);          
-                // forward.update().fuse(z, n, par).parallel(par);
-                // //forward.update().fuse(y, par, par).parallel(par);
-                // forward.update().unroll(r.x);
-                // forward.update().unroll(r.y);
-                // // There are performance implications to this and seems to
-                // // be incompatible with some schedules. Have to investigate
-                // // this more closely.
-                // // f_in_bound.compute_at(forward, n);
-                // f_in_bound.compute_at(forward, z_t);
             }
 
             ////////////////////////////////////////////////////////////////////
