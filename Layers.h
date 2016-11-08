@@ -455,7 +455,7 @@ class Convolutional: public Layer {
             // // in_grad(x, y, z, n) = 0.f;
             RDom r3(0, f_w, 0, f_h, 0, num_f);
 
-            in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(f_w - r3.x-1, f_h - r3.y-1, z, r3.z);
+            in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, z, r3.z);
             if (schedule) {
                 Var par1, par2;
                 // put schedule here (if scheduling layers independently)
@@ -588,7 +588,7 @@ class MaxPooling: public Layer {
             // The code should define in_grad() ...
             ////////////////////////////////////////////////////////////////////
 
-            in_grad(x, y, z, n) = 0.f;
+            // in_grad(x, y, z, n) = 0.f;
             Func pool_argmax;
 
             RDom r(0, p_w, 0, p_h);
