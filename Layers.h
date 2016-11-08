@@ -138,7 +138,9 @@ class Affine: public Layer {
         // Halide variables
         Var in_dim, unit_dim, n;
 
-        Var par;
+
+
+        Var x_outer, x_inner, y_outer, y_inner, par;
 
          Affine(std::string _name, int _num_units, Layer* in,
                bool schedule = true) : Layer(_name, in) {
@@ -166,8 +168,13 @@ class Affine: public Layer {
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
                 // forward.compute_root();
-                forward.compute_root().fuse(unit_dim, n, par).parallel(par);                    
-                forward.update().fuse(unit_dim, n, par).parallel(par);  
+                forward.compute_root();//.fuse(unit_dim, n, par).parallel(par);
+
+                forward.update().split(unit_dim, x_outer, x_inner, 8);
+                forward.update().split(n, y_outer, y_inner, 8);
+                forward.update().reorder(x_inner, y_inner, x_outer, y_outer).fuse(x_outer, y_outer, par).parallel(par);
+
+                // fuse(unit_dim, n, par).parallel(par);  
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -273,9 +280,10 @@ class Convolutional: public Layer {
         Func f_in_bound;
 
         Var y_t, z_t, par;
-        Halide::Var y_outer, y_inner, z_outer, z_inner;
+        Halide::Var y_outer, y_inner, z_outer, z_inner, x_inner, x_outer;
         int o_block_size = 16;
         int y_block_size = 16;
+        int x_block_size = 16;
         int vec_len = 8;
         Convolutional(std::string _name, int _num_f, int _f_w, int _f_h,
                       int _pad, int _stride, Layer* in,
@@ -322,14 +330,14 @@ class Convolutional: public Layer {
             if (schedule) {
 
                 // put schedule here (if scheduling layers independently)
-                f_in_bound.compute_root();
+                // f_in_bound.compute_at(forward, z_inner);
+                f_in_bound.compute_root();//.parallel(n);//.fuse(x,y,par).parallel(par);
                 forward.compute_root();
-                forward.parallel(n);
 
-                forward.update().split(y, y_outer, y_inner, y_block_size).split(z, z_outer, z_inner, o_block_size);
-                forward.update().reorder(y_inner, z_inner, r.z, y_outer, z_outer); 
+                forward.update().split(y, y_outer, y_inner, y_block_size);//.split(x, x_outer, x_inner, x_block_size);
+                forward.update().reorder(r.x,r.y, x,y_inner,y_outer, r.z); 
                 forward.update().vectorize(x, vec_len);          
-                forward.update().parallel(n);
+                forward.update().fuse(z,n, par).parallel(par);
                 forward.update().unroll(r.x).unroll(r.y);
                 printf("Pseudo-code for the schedule:\n");
                         forward.print_loop_nest();
