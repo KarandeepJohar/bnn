@@ -192,7 +192,7 @@ class Affine: public Layer {
 
             Func in_grad(name + "_in_grad");
             Func dW(name + "_dW"), db(name + "_db");
-
+            Func in_f = inputs[0]->forward;
             Image<float> W = params[0];
             Image<float> b = params[1];
 
@@ -215,22 +215,45 @@ class Affine: public Layer {
             //                    in_grad(in_dim, n) ...
             ////////////////////////////////////////////////////////////////////
             RDom r1(0, num_units);
+            // initializing to zero
+            in_grad(in_dim, n) =
+                cast(dout.output_types()[0], 0);
+            in_grad(in_dim, n) +=
+                dout(r1.x, n) *  W(in_dim, r1.x);
+
             RDom r2(0, num_samples);
-            Func f_in_bound = BoundaryConditions::constant_exterior(inputs[0]->forward, 0,
-                                                               0, num_inputs, 0, num_samples);
+            // initializing to regularized weights
+            dW(in_dim, unit_dim) = cast(dout.output_types()[0],
+                                        W(in_dim, unit_dim));
+            dW(in_dim, unit_dim) +=
+                dout(unit_dim, r2.x) * in_f(in_dim, r2.x);
+
+
+            // initializing to zero
+            db(unit_dim) = cast(dout.output_types()[0], 0);
+            db(unit_dim) += dout(unit_dim, r2.x);
+
+            // RDom r1(0, num_units);
+            // RDom r2(0, num_samples);
             // in_f = in_grad = 128 x 10
             // dout = 32 x 10
             // W = dW = 128 x 32
             // unit_dim = num_units = 32, in_dim = 128
-            in_grad(in_dim, n) += (W(in_dim, r1.x)*dout(r1.x, n));
-            dW(in_dim, unit_dim) += (dout(unit_dim, r2.x)*f_in_bound(in_dim, r2.x));//sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
-            db(unit_dim) += (dout(unit_dim, r2.x));
+            // Func f_in_bound = BoundaryConditions::constant_exterior(inputs[0]->forward, 0,
+            //                                                    0, num_inputs, 0, num_samples);
+            // in_grad(in_dim, n) += (W(in_dim, r1.x)*dout(r1.x, n));
+            // dW(in_dim, unit_dim) += (dout(unit_dim, r2.x)*f_in_bound(in_dim, r2.x));//sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
+            // db(unit_dim) += (dout(unit_dim, r2.x));
 
             if (schedule) {
+                Var par1, par2;
                 // put schedule here (if scheduling layers independently)
                 dW.compute_root();
+                // dW.update().fuse(in_dim, unit_dim, par1).parallel(par1);
                 db.compute_root();
                 in_grad.compute_root();
+                in_grad.update().parallel(n);
+
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -392,30 +415,65 @@ class Convolutional: public Layer {
             //                    db(x) = ...
             //                    in_grad(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
+
             RDom r1(0, out_w, 0, out_h, 0, num_samples);
 
-            dW(x, y, z, n) = 0.f;
-            db(x) = 0.f;
+            // intialize to regularized weights
+            dW(x, y, z, n) = cast(dout.output_types()[0],
+                                  W(x, y, z, n));
             dW(x, y, z, n) += dout(r1.x, r1.y, n, r1.z) *
-                              f_in_bound(r1.x * stride + x - pad,
-                                         r1.y * stride + y - pad,
-                                         z, r1.z);
+                                   f_in_bound(r1.x*stride + x - pad,
+                                              r1.y*stride + y - pad,
+                                              z, r1.z);
+
+
             // intialize to zero
-            // db(x) = cast(dout.output_types()[0], 0);
+            db(x) = cast(dout.output_types()[0], 0);
             db(x) += dout(r1.x, r1.y, x, r1.z);
+
 
             RDom r2(0, num_f);
             // intialize to zero
             in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
-            // in_grad(x, y, z, n) = 0.f;
+            // in_grad(x, y, z, n) += dout(x, y, r2.x, n) * W(x, y, z, r2.x);
+
+            // RDom r1(0, out_w, 0, out_h, 0, num_samples);
+
+            // dW(x, y, z, n) = 0.f;
+            // db(x) = 0.f;
+            // dW(x, y, z, n) += dout(r1.x, r1.y, n, r1.z) *
+            //                   f_in_bound(r1.x * stride + x - pad,
+            //                              r1.y * stride + y - pad,
+            //                              z, r1.z);
+            // // intialize to zero
+            // db(x) = cast(dout.output_types()[0], 0);
+            // db(x) += dout(r1.x, r1.y, x, r1.z);
+
+            // RDom r2(0, num_f);
+            // // intialize to zero
+            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+            // // in_grad(x, y, z, n) = 0.f;
             RDom r3(0, f_w, 0, f_h, 0, num_f);
 
-            in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, z, r3.z);
+            in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(f_w - r3.x-1, f_h - r3.y-1, z, r3.z);
             if (schedule) {
+                Var par1, par2;
                 // put schedule here (if scheduling layers independently)
                 dW.compute_root();
+                // dW.update().split(y, y_outer, y_inner, y_block_size);//.split(x, x_outer, x_inner, x_block_size);
+                // dW.update().reorder(r1.x,r1.y, x, y_inner, y_outer, r1.z); 
+                // dW.update().vectorize(x, vec_len);          
+                dW.update().fuse(z,n, par).parallel(par);
+                dW.update().unroll(r1.x).unroll(r1.y);
+                // dW.update().fuse(z, n, par1).parallel(par1);
                 db.compute_root();
                 in_grad.compute_root();
+                in_grad.update().split(y, y_outer, y_inner, y_block_size);//.split(x, x_outer, x_inner, x_block_size);
+                in_grad.update().reorder(r3.x,r3.y, x, y_inner, y_outer, r3.z); 
+                in_grad.update().vectorize(x, vec_len);          
+                in_grad.update().fuse(z,n, par2).parallel(par2);
+                in_grad.update().unroll(r3.x).unroll(r3.y);
+                // in_grad.update().fuse(z, n, par2).parallel(par2);
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -530,7 +588,7 @@ class MaxPooling: public Layer {
             // The code should define in_grad() ...
             ////////////////////////////////////////////////////////////////////
 
-            // in_grad(x, y, z, n) = 0.f;
+            in_grad(x, y, z, n) = 0.f;
             Func pool_argmax;
 
             RDom r(0, p_w, 0, p_h);
@@ -547,7 +605,23 @@ class MaxPooling: public Layer {
                                pool_argmax(r2.x, r2.y, z, n)[1]-pad, 0, in_h);
 
             in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
+            // Func in_f = in_layer->forward;
+            // Func pool_argmax;
+            // RDom r1(0, p_w, 0, p_h);
+            // pool_argmax(x, y, z, n) = argmax(in_f(x * stride + r1.x,
+            //                                       y * stride + r1.y,
+            //                                       z, n));
 
+            // pool_argmax.compute_root();
+            // RDom r2(0, this->out_dim_size(0), 0, this->out_dim_size(1));
+            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+
+            // Expr x_bin = clamp(r2.x * stride +
+            //                    pool_argmax(r2.x, r2.y, z, n)[0], 0, in_w);
+            // Expr y_bin = clamp(r2.y * stride +
+            //                    pool_argmax(r2.x, r2.y, z, n)[1], 0, in_h);
+
+            // in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
