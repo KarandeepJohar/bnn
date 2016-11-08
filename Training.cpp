@@ -95,6 +95,50 @@ void init_gaussian(Image<float> &params, float mean, float std_dev,
     }
 }
 
+void update_with_momentum(Image<float> &param, Image<float> &dparam,
+                          Image<float> &update_cache, float momentum,
+                          float lr_rate) {
+    switch (param.dimensions()) {
+        case 1:
+            for (int i = 0; i < param.extent(0); i++) {
+                update_cache(i) = momentum * update_cache(i) -
+                    lr_rate * dparam(i);
+                param(i) += update_cache(i);
+            }
+            break;
+        case 2:
+            for (int i = 0; i < param.extent(0); i++)
+                for (int j = 0; j < param.extent(1); j++) {
+                    update_cache(i, j) = momentum * update_cache(i, j) -
+                        lr_rate * dparam(i, j);
+                    param(i, j) += update_cache(i, j);
+                }
+            break;
+        case 3:
+            for (int i = 0; i < param.extent(0); i++)
+                for (int j = 0; j < param.extent(1); j++)
+                    for (int k = 0; k < param.extent(2); k++) {
+                        update_cache(i, j, k) = momentum *
+                                                update_cache(i, j, k) -
+                                                lr_rate * dparam(i, j, k);
+                        param(i, j, k) += update_cache(i, j, k);
+                    }
+            break;
+        case 4:
+            for (int i = 0; i < param.extent(0); i++)
+                for (int j = 0; j < param.extent(1); j++)
+                    for (int k = 0; k < param.extent(2); k++)
+                        for (int l = 0; l < param.extent(3); l++) {
+                            update_cache(i, j, k, l) = momentum *
+                                                       update_cache(i, j, k, l) -
+                                                       lr_rate *
+                                                       dparam(i, j, k, l);
+                            param(i, j, k, l) += update_cache(i, j, k, l);
+                        }
+            break;
+    }
+}
+
 void usage(const char* binary_name) {
     std::cout << "Usage: " << binary_name << " [options] datadir" << std::endl;
     std::cout << std::endl;
@@ -315,7 +359,8 @@ int main(int argc, char **argv) {
             for (auto l: toy.layers) {
                 int num_params = l.second->params.size();
                 for (int p = 0; p < num_params; p++) {
-
+                    update_with_momentum(l.second->params[p], l.second->param_grads[p],
+                                                         l.second->params_cache[p], momentum, learning_rate);
                     // TODO: students should update parameters using momentum here
                     //
                     // Given parameter buffer: l.second->params[p]

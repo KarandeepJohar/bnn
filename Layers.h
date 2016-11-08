@@ -145,7 +145,7 @@ class Affine: public Layer {
          Affine(std::string _name, int _num_units, Layer* in,
                bool schedule = true) : Layer(_name, in) {
 
-            Func in_f = inputs[0]->forward;
+            // Func in_f = inputs[0]->forward;
             num_units = _num_units;
 
             // create parameters
@@ -161,18 +161,21 @@ class Affine: public Layer {
             //
             // The code should define forward(unit_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
+
+            Func f_in_bound = BoundaryConditions::constant_exterior(inputs[0]->forward, 0,
+                                                               0, num_inputs, 0, num_samples);
             RDom r(0, num_inputs);
             forward(unit_dim, n) = b(unit_dim);
-            forward(unit_dim, n) += (W(r.x, unit_dim) * in_f(r.x, n));
+            forward(unit_dim, n) += (W(r.x, unit_dim) * f_in_bound(r.x, n));
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
                 // forward.compute_root();
                 forward.compute_root();//.fuse(unit_dim, n, par).parallel(par);
 
-                forward.update().split(unit_dim, x_outer, x_inner, 8);
+                forward.update().split(unit_dim, x_outer, x_inner, 4);
                 forward.update().split(n, y_outer, y_inner, 8);
-                forward.update().reorder(x_inner, y_inner, x_outer, y_outer).fuse(x_outer, y_outer, par).parallel(par).vectorize(x_inner, 8);
+                forward.update().reorder(x_inner, y_inner, x_outer, y_outer).fuse(x_outer, y_outer, par).parallel(par).vectorize(x_inner, 4);
 
                 // fuse(unit_dim, n, par).parallel(par);  
             }
@@ -213,13 +216,14 @@ class Affine: public Layer {
             ////////////////////////////////////////////////////////////////////
             RDom r1(0, num_units);
             RDom r2(0, num_samples);
-            Func in_f = inputs[0]->forward;
+            Func f_in_bound = BoundaryConditions::constant_exterior(inputs[0]->forward, 0,
+                                                               0, num_inputs, 0, num_samples);
             // in_f = in_grad = 128 x 10
             // dout = 32 x 10
             // W = dW = 128 x 32
             // unit_dim = num_units = 32, in_dim = 128
             in_grad(in_dim, n) += (W(in_dim, r1.x)*dout(r1.x, n));
-            dW(in_dim, unit_dim) += (dout(unit_dim, r2.x)*in_f(in_dim, r2.x));//sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
+            dW(in_dim, unit_dim) += (dout(unit_dim, r2.x)*f_in_bound(in_dim, r2.x));//sum(dout(in_dim, r2.x)*in_f(unit_dim, r2.x));
             db(unit_dim) += (dout(unit_dim, r2.x));
 
             if (schedule) {
@@ -335,7 +339,7 @@ class Convolutional: public Layer {
                 forward.compute_root();
 
                 forward.update().split(y, y_outer, y_inner, y_block_size);//.split(x, x_outer, x_inner, x_block_size);
-                forward.update().reorder(r.x,r.y, x, y_inner, r.z, y_outer); 
+                forward.update().reorder(r.x,r.y, x, y_inner, y_outer, r.z); 
                 forward.update().vectorize(x, vec_len);          
                 forward.update().fuse(z,n, par).parallel(par);
                 forward.update().unroll(r.x).unroll(r.y);
