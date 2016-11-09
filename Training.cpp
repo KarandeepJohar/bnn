@@ -95,7 +95,7 @@ void init_gaussian(Image<float> &params, float mean, float std_dev,
     }
 }
 
-void update_with_momentum(Image<float> &param, Image<float> &dparam,
+void update(Image<float> &param, Image<float> &dparam,
                           Image<float> &update_cache, float momentum,
                           float lr_rate) {
     switch (param.dimensions()) {
@@ -359,7 +359,7 @@ int main(int argc, char **argv) {
             for (auto l: toy.layers) {
                 int num_params = l.second->params.size();
                 for (int p = 0; p < num_params; p++) {
-                    update_with_momentum(l.second->params[p], l.second->param_grads[p],
+                    update(l.second->params[p], l.second->param_grads[p],
                                                          l.second->params_cache[p], momentum, learning_rate);
                     // TODO: students should update parameters using momentum here
                     //
