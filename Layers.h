@@ -265,6 +265,333 @@ class Affine: public Layer {
             return size;
         }
 };
+/*
+ * Convolutional Layer --
+ *
+ */
+class Bilateral: public Layer {
+    public:
+
+        // number of channels, height and width of the input to the layer
+        //
+        // Example: if the input is a 224x224 RGB images, and the
+        // image batch size = 10 then:
+        //   -- num_samples = 10
+        //   -- in_ch = 3
+        //   -- in_h = in_w = 224
+        int num_samples, in_ch, in_h, in_w;
+
+        // number of filters in the convolution layer, filter height,
+        // filter width, padding and stride
+        int num_f, f_h, f_w, pad, stride;
+
+        // Halide vars
+        Var x, y, z, n, ic, oc, c;
+
+        // padded input to avoid bounds check during the computation
+        Func f_in_bound;
+        Func interpolated;
+        Func histogram;
+
+        Var y_t, z_t, par;
+        Halide::Var y_outer, y_inner, z_outer, z_inner, x_inner, x_outer;
+        int o_block_size = 16;
+        int y_block_size = 8;
+        int x_block_size = 8;
+        int vec_len = 16;
+        float epsilon = 0.0001;
+        int s_sigma = 8;
+        float r_sigma = 0.1;
+        Bilateral(std::string _name, int _num_f, int _f_w, int _f_h,
+                      int _pad, int _stride, Layer* in,
+                      bool schedule=true) : Layer(_name, in) {
+
+            Func _f_in_bound(name + "_f_in_bound");
+            f_in_bound = _f_in_bound;
+
+            assert(inputs[0]->out_dims() == 4);
+
+            // input layout: width, height, channels, samples
+            num_samples = inputs[0]->out_dim_size(3);
+            in_ch = inputs[0]->out_dim_size(2);
+            in_h = inputs[0]->out_dim_size(1);
+            in_w = inputs[0]->out_dim_size(0);
+
+            num_f = _num_f;
+            f_h = _f_h;
+            f_w = _f_w;
+            pad = _pad;
+            stride = _stride;
+
+            // create a padded input and avoid checking boundary
+            // conditions while computing the actual convolution
+
+            f_in_bound = BoundaryConditions::repeat_edge(inputs[0]->forward, 0, in_w, 0, in_h, 0, in_ch);
+
+            // create parameters
+            Image<float> W(f_w, f_h, in_ch, num_f), b(num_f);
+            params.push_back(W);
+            params.push_back(b);
+
+            ////////////////////////////////////////////////////////////////////
+            // start student code here
+            //
+            // Code should define forward(x, y, z, n) = ...
+            ////////////////////////////////////////////////////////////////////
+
+            
+            RDom r(0, s_sigma, 0, s_sigma);
+            Expr val = f_in_bound(x * s_sigma + r.x - s_sigma/2, y * s_sigma + r.y - s_sigma/2, ic, n);
+            val = clamp(val, 0.0f, 1.0f);
+            
+
+
+            Expr zi = cast<int>(val * (1.0f/r_sigma) + 0.5f);
+
+            histogram(x, y, ic, z, c, n) = 0.0f;
+            histogram(x, y, ic, zi, c, n) += select(c == 0, val, 1.0f);
+
+            RDom r1(0, f_w, 0, f_h, 0, in_ch);
+
+            Func blur("blur");
+            blur(x, y, oc, z, c, n) += b(oc);
+            blur(x, y, oc, z, c, n) += (histogram(x * stride + r1.x - pad,
+                                                 y * stride + r1.y - pad,
+                                                 r1.z, z, c, n) * W(r1.x, r1.y, r1.z, oc));
+            // Take trilinear samples to compute the output
+            val = clamp(f_in_bound(x, y), 0.0f, 1.0f);
+            Expr zv = val * (1.0f/r_sigma);
+            zi = cast<int>(zv);
+            Expr zf = zv - zi;
+            Expr xf = cast<float>(x % s_sigma) / s_sigma;
+            Expr yf = cast<float>(y % s_sigma) / s_sigma;
+            Expr xi = x/s_sigma;
+            Expr yi = y/s_sigma;
+            interpolated(x, y, oc, c, n) =
+                lerp(lerp(lerp(blur(xi, yi, oc, zi, c, n), blur(xi+1, yi, oc, zi, c, n), xf),
+                          lerp(blur(xi, yi+1, oc, zi, c, n), blur(xi+1, yi+1, oc, zi, c, n), xf), yf),
+                     lerp(lerp(blur(xi, yi, oc, zi+1, c, n), blur(xi+1, yi, oc, zi+1, c, n), xf),
+                          lerp(blur(xi, yi+1, oc, zi+1, c, n), blur(xi+1, yi+1, oc, zi+1, c, n), xf), yf), zf);
+
+            // Normalize
+            // Func bilateral_grid("bilateral_grid");
+            forward(x, y, oc, n) = interpolated(x, y, oc, 0, n)/interpolated(x, y, oc, 1, n);
+
+
+
+            if (schedule) {
+
+                // put schedule here (if scheduling layers independently)
+
+                f_in_bound.compute_root();
+                forward.compute_root();
+                printf("Pseudo-code for the schedule:\n");
+                        forward.print_loop_nest();
+                        printf("\n");
+
+            }
+
+            ////////////////////////////////////////////////////////////////////
+            // end student code here
+            ////////////////////////////////////////////////////////////////////
+
+        }
+
+       /*
+        * define_gradients --
+        *
+        * Generates functions to compute layer parameter and layer input
+        * gradients given dout = dLoss/layer
+        * 
+        */
+        void define_gradients(Func dout, bool schedule = true) {
+            check_defined(dout);
+            assert(f_input_grads.size() == 0);
+
+            Func in_grad(name + "_in_grad");
+            Func dW(name + "_dW"), db(name + "_db");
+
+            int out_w = this->out_dim_size(0);
+            int out_h = this->out_dim_size(1);
+
+            Image<float> W = params[0];
+            Image<float> b = params[1];
+
+            // create storage for gradients and caching params
+            Image<float> W_grad(f_w, f_h, in_ch, num_f);
+            param_grads.push_back(W_grad);
+            Image<float> W_cache(f_w, f_h, in_ch, num_f);
+            params_cache.push_back(W_cache);
+
+            Image<float> b_grad(num_f);
+            param_grads.push_back(b_grad);
+            Image<float> b_cache(num_f);
+            params_cache.push_back(b_cache);
+
+            ////////////////////////////////////////////////////////////////////
+            // start student code here
+            //
+            // Code should define dW(x, y, z, n) = ...
+            //                    db(x) = ...
+            //                    in_grad(x, y, z, n) = ...
+            ////////////////////////////////////////////////////////////////////
+
+            RDom r1(0, out_w/s_sigma+1, 0, out_h/s_sigma+1, 0, num_samples);
+            RDom r2(0, cast<int>(1.0f/r_sigma+1), 0, 2);
+            RDom r3(0, cast<int>(1.0f/r_sigma+1));
+            Func dInterpolated("dInterpolated");            
+            // Func dInterpolated(x,y,z,c,n);
+            dInterpolated(x,y,z,c,n) = select(c==0,dout(x,y,z,n)/interpolated(x,y,z, 1, n), 
+                -dout(x,y,z,n)*interpolated(x,y,z,0, n)/(interpolated(x,y,z, 1, n)*interpolated(x,y,z, 1, n)));
+
+
+
+            // RDom r(0, p_w, 0, p_h);
+            // pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x,
+            //                                      y * stride + r.y,
+            //                                      z, n));
+
+            // RDom r2(0, this->out_dim_size(0), 0, this->out_dim_size(1));
+            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+
+            // Expr x_bin = clamp(r2.x * stride +
+            //                    pool_argmax(r2.x, r2.y, z, n)[0]-pad, 0, in_w);
+            // Expr y_bin = clamp(r2.y * stride +
+            //                    pool_argmax(r2.x, r2.y, z, n)[1]-pad, 0, in_h);
+
+            // in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
+
+
+
+            Expr val = interpolated(x, y, oc, c, n);
+            Expr zv = val * (1.0f/r_sigma);
+            Expr zi = cast<int>(zv);
+            Expr zf = zv - zi;
+
+            Expr xf = cast<float>(x % s_sigma) / s_sigma;
+            Expr yf = cast<float>(y % s_sigma) / s_sigma;
+            Expr xi = x/s_sigma;
+            Expr yi = y/s_sigma;
+
+            Func dInterpolatedSafe = BoundaryConditions::constant_exterior(dInterpolated, 0, 0, out_w, 0, out_h, 0, num_f, 0, 2, 0, num_samples);
+
+            Func dblurz("dblurz");
+            dblurz(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
+
+            dblurz(x, y, oc, zi, c,n) += dInterpolatedSafe(x,y,oc, c, n)*zf;
+            dblurz(x, y, oc, zi+1, c,n) += dInterpolatedSafe(x,y,oc, c, n)*(1-zf);
+
+            Func dBlurzSafe = BoundaryConditions::constant_exterior(dblurz, 0, 0, out_w, 0, out_h, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
+
+            Func dblury("dblury");
+
+            dblury(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
+            
+            dblury(x, yi, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*yf;
+            dblury(x, yi+1, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*(1-yf);
+
+            Func dblurySafe = BoundaryConditions::constant_exterior(dblury, 0, 0, out_w, 0, out_h/8+1, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
+
+            Func dblurx("dblurx");
+            dblurx(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
+
+            dblurx(xi, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*xf;
+            dblurx(xi+1, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*(1-xf);
+
+            Func dblur = BoundaryConditions::constant_exterior(dblurx, 0, 0, out_w/8+1, 0, out_h/8+1, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
+
+            dW(x, y, ic, n) = cast(dout.output_types()[0], 0);
+            dW(x, y, ic, n) += dblur(r1.x, r1.y, n, r2.x, r2.y, r1.z) *
+                                   histogram(r1.x*stride + x - pad,
+                                              r1.y*stride + y - pad,
+                                              ic, r2.x, r2.y, r1.z);
+
+
+            // intialize to zero
+            db(x) = cast(dout.output_types()[0], 0);
+            db(x) += dout(r1.x, r1.y, x, r2.x, r2.y, r1.z);
+
+
+            Func dHistogram("dHistogram");
+            dHistogram(x, y, ic, z, c, n) = cast(dout.output_types()[0], 0);
+            RDom r4(0, f_w, 0, f_h, 0, num_f);
+            dHistogram(x, y, ic, z, c, n) = dblur(x, y, r3.z, z, c, n) * W(r3.x, r3.y, ic, r3.z);
+
+            Func uniform1("uniform1");
+            uniform1(x, y, z, n) = 1;
+            RDom r5( 0, s_sigma, 0, s_sigma, 0, cast<int>(1.0f/r_sigma)+1);
+
+            Func uniform("uniform");
+            uniform = BoundaryConditions::constant_exterior(uniform1, 0, 0, in_w, 0, in_h, 0, in_ch);
+            
+            //TODO in_grad from dHistogram
+            // in_grad(x,y,ic,n) += dHistogram(x, y, ic, r5.z , 0, n) * uniform()
+
+            // in_grad(x, y, ic, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, ic, r3.z);
+            // RDom r(0, p_w, 0, p_h);
+            // pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x,
+            //                                      y * stride + r.y,
+            //                                      z, n));
+
+            // RDom r2(0, this->out_dim_size(0), 0, this->out_dim_size(1));
+            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+
+            // Expr x_bin = clamp(r2.x * stride +
+            //                    pool_argmax(r2.x, r2.y, z, n)[0]-pad, 0, in_w);
+            // Expr y_bin = clamp(r2.y * stride +
+            //                    pool_argmax(r2.x, r2.y, z, n)[1]-pad, 0, in_h);
+
+            // in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
+
+            // RDom r2(0, num_f);
+            // // intialize to zero
+            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+            // RDom r3(0, f_w, 0, f_h, 0, num_f);
+
+            // in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, z, r3.z);
+            if (schedule) {
+                Var par1, par2;
+                // put schedule here (if scheduling layers independently)
+                dW.compute_root();         
+                dW.update().fuse(z,n, par).parallel(par);
+                dW.update().unroll(r1.x).unroll(r1.y);
+                db.compute_root();
+                in_grad.compute_root();
+                in_grad.update().split(y, y_outer, y_inner, y_block_size);
+                in_grad.update().reorder(r3.x,r3.y, x, y_inner, y_outer, r3.z); 
+                in_grad.update().vectorize(x, vec_len);          
+                in_grad.update().fuse(z,n, par2).parallel(par2);
+                in_grad.update().unroll(r3.x).unroll(r3.y);
+            }
+
+            ////////////////////////////////////////////////////////////////////
+            // end student code here
+            ////////////////////////////////////////////////////////////////////
+
+            f_param_grads.push_back(dW);
+            f_param_grads.push_back(db);
+
+            f_input_grads.push_back(in_grad);
+        }
+
+        int out_dims() { return 4; }
+
+        int out_dim_size(int i) {
+            assert(i < 4);
+            int size = 0;
+            if (i == 0) {
+                size = (1 + (in_w + 2 * pad - f_w)/stride);
+            } else if (i == 1) {
+                size = (1 + (in_h + 2 * pad - f_h)/stride);
+            } else if (i == 2) {
+                size = num_f;
+            } else if (i == 3) {
+                size = num_samples;
+            }
+            return size;
+        }
+};
+
 
 /*
  * Convolutional Layer --
@@ -416,8 +743,6 @@ class Convolutional: public Layer {
             db(x) = cast(dout.output_types()[0], 0);
             db(x) += dout(r1.x, r1.y, x, r1.z);
 
-
-            RDom r2(0, num_f);
             // intialize to zero
             in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
             RDom r3(0, f_w, 0, f_h, 0, num_f);
