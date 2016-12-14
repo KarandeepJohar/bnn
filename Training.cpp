@@ -264,10 +264,10 @@ int main(int argc, char **argv) {
         init_gaussian(toy.layers["conv1"]->params_cache[0], 0.0f, 0.001, rd);
         init_constant(toy.layers["conv1"]->params[1], 0.0f);
         init_constant(toy.layers["conv1"]->params_cache[1], 0.0f);
-        init_gaussian(toy.layers["conv2"]->params[0], 0.0f, 0.001, rd);
-        init_gaussian(toy.layers["conv2"]->params_cache[0], 0.0f, 0.001, rd);
-        init_constant(toy.layers["conv2"]->params[1], 0.0f);
-        init_constant(toy.layers["conv2"]->params_cache[1], 0.0f);
+        init_gaussian(toy.layers["bil1"]->params[0], 0.0f, 0.001, rd);
+        init_gaussian(toy.layers["bil1"]->params_cache[0], 0.0f, 0.001, rd);
+        init_constant(toy.layers["bil1"]->params[1], 0.0f);
+        init_constant(toy.layers["bil1"]->params_cache[1], 0.0f);
         init_gaussian(toy.layers["fc"]->params[0], 0.0f, 0.001, rd);
         init_gaussian(toy.layers["fc"]->params_cache[0], 0.0f, 0.001, rd);
         init_constant(toy.layers["fc"]->params[1], 0.0f);
@@ -292,8 +292,8 @@ int main(int argc, char **argv) {
     // gradients of the various trainable layers
     train_outs.push_back(toy.layers["conv1"]->f_param_grads[0]);
     train_outs.push_back(toy.layers["conv1"]->f_param_grads[1]);
-    train_outs.push_back(toy.layers["conv2"]->f_param_grads[0]);
-    train_outs.push_back(toy.layers["conv2"]->f_param_grads[1]);
+    train_outs.push_back(toy.layers["bil1"]->f_param_grads[0]);
+    train_outs.push_back(toy.layers["bil1"]->f_param_grads[1]);
     train_outs.push_back(toy.layers["fc"]->f_param_grads[0]);
     train_outs.push_back(toy.layers["fc"]->f_param_grads[1]);
 
@@ -346,8 +346,8 @@ int main(int argc, char **argv) {
                 {loss, scores,
                  toy.layers["conv1"]->param_grads[0],
                  toy.layers["conv1"]->param_grads[1],
-                 toy.layers["conv2"]->param_grads[0],
-                 toy.layers["conv2"]->param_grads[1],
+                 toy.layers["bil1"]->param_grads[0],
+                 toy.layers["bil1"]->param_grads[1],
                  toy.layers["fc"]->param_grads[0],
                  toy.layers["fc"]->param_grads[1]
                 });

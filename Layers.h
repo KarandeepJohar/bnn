@@ -286,7 +286,7 @@ class Bilateral: public Layer {
         int num_f, f_h, f_w, pad, stride;
 
         // Halide vars
-        Var x, y, z, n, ic, oc, c;
+        Var x, y, z, n, ic, oc, c, k;
 
         // padded input to avoid bounds check during the computation
         Func f_in_bound;
@@ -326,7 +326,7 @@ class Bilateral: public Layer {
             // create a padded input and avoid checking boundary
             // conditions while computing the actual convolution
 
-            f_in_bound = BoundaryConditions::repeat_edge(inputs[0]->forward, 0, in_w, 0, in_h, 0, in_ch);
+            f_in_bound = BoundaryConditions::repeat_edge(inputs[0]->forward, 0, in_w, 0, in_h);
 
             // create parameters
             Image<float> W(f_w, f_h, in_ch, num_f), b(num_f);
@@ -338,7 +338,6 @@ class Bilateral: public Layer {
             //
             // Code should define forward(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
-
             
             RDom r(0, s_sigma, 0, s_sigma);
             Expr val = f_in_bound(x * s_sigma + r.x - s_sigma/2, y * s_sigma + r.y - s_sigma/2, ic, n);
@@ -348,18 +347,18 @@ class Bilateral: public Layer {
 
             Expr zi = cast<int>(val * (1.0f/r_sigma) + 0.5f);
 
-            histogram(x, y, ic, z, c, n) = 0.0f;
+            histogram(x, y, ic, k, c, n) = 0.0f;
             histogram(x, y, ic, zi, c, n) += select(c == 0, val, 1.0f);
 
             RDom r1(0, f_w, 0, f_h, 0, in_ch);
 
             Func blur("blur");
-            blur(x, y, oc, z, c, n) += b(oc);
-            blur(x, y, oc, z, c, n) += (histogram(x * stride + r1.x - pad,
+            blur(x, y, z, k, c, n) += b(z);
+            blur(x, y, z, k, c, n) += (histogram(x * stride + r1.x - pad,
                                                  y * stride + r1.y - pad,
-                                                 r1.z, z, c, n) * W(r1.x, r1.y, r1.z, oc));
+                                                 r1.z, k, c, n) * W(r1.x, r1.y, r1.z, z));
             // Take trilinear samples to compute the output
-            val = clamp(f_in_bound(x, y), 0.0f, 1.0f);
+            val = clamp(f_in_bound(x, y, z, n), 0.0f, 1.0f);
             Expr zv = val * (1.0f/r_sigma);
             zi = cast<int>(zv);
             Expr zf = zv - zi;
@@ -367,15 +366,15 @@ class Bilateral: public Layer {
             Expr yf = cast<float>(y % s_sigma) / s_sigma;
             Expr xi = x/s_sigma;
             Expr yi = y/s_sigma;
-            interpolated(x, y, oc, c, n) =
-                lerp(lerp(lerp(blur(xi, yi, oc, zi, c, n), blur(xi+1, yi, oc, zi, c, n), xf),
-                          lerp(blur(xi, yi+1, oc, zi, c, n), blur(xi+1, yi+1, oc, zi, c, n), xf), yf),
-                     lerp(lerp(blur(xi, yi, oc, zi+1, c, n), blur(xi+1, yi, oc, zi+1, c, n), xf),
-                          lerp(blur(xi, yi+1, oc, zi+1, c, n), blur(xi+1, yi+1, oc, zi+1, c, n), xf), yf), zf);
+            interpolated(x, y, z, c, n) =
+                lerp(lerp(lerp(blur(xi, yi, z, zi, c, n), blur(xi+1, yi, z, zi, c, n), xf),
+                          lerp(blur(xi, yi+1, z, zi, c, n), blur(xi+1, yi+1, z, zi, c, n), xf), yf),
+                     lerp(lerp(blur(xi, yi, z, zi+1, c, n), blur(xi+1, yi, z, zi+1, c, n), xf),
+                          lerp(blur(xi, yi+1, z, zi+1, c, n), blur(xi+1, yi+1, z, zi+1, c, n), xf), yf), zf);
 
             // Normalize
             // Func bilateral_grid("bilateral_grid");
-            forward(x, y, oc, n) = interpolated(x, y, oc, 0, n)/interpolated(x, y, oc, 1, n);
+            forward(x, y, z, n) = interpolated(x, y, z, 0, n)/interpolated(x, y, z, 1, n);
 
 
 
@@ -385,9 +384,9 @@ class Bilateral: public Layer {
 
                 f_in_bound.compute_root();
                 forward.compute_root();
-                printf("Pseudo-code for the schedule:\n");
-                        forward.print_loop_nest();
-                        printf("\n");
+                // printf("Pseudo-code for the schedule:\n");
+                //         forward.print_loop_nest();
+                //         printf("\n");
 
             }
 
@@ -436,9 +435,13 @@ class Bilateral: public Layer {
             //                    in_grad(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
 
-            RDom r1(0, out_w/s_sigma+1, 0, out_h/s_sigma+1, 0, num_samples);
-            RDom r2(0, cast<int>(1.0f/r_sigma+1), 0, 2);
+            RDom r1(0, out_w/s_sigma+1, 0, out_h/s_sigma+1, 0, num_samples, 0, cast<int>(1.0f/r_sigma+1));
+            RDom r2(0, 2);
             RDom r3(0, cast<int>(1.0f/r_sigma+1));
+
+            RDom r4(0, f_w, 0, f_h, 0, num_f);
+            RDom r6(0,2);
+
             Func dInterpolated("dInterpolated");            
             // Func dInterpolated(x,y,z,c,n);
             dInterpolated(x,y,z,c,n) = select(c==0,dout(x,y,z,n)/interpolated(x,y,z, 1, n), 
@@ -487,46 +490,51 @@ class Bilateral: public Layer {
 
             dblury(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
             
-            dblury(x, yi, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*yf;
-            dblury(x, yi+1, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*(1-yf);
+            // dblury(x, yi, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*yf;
+            // dblury(x, yi+1, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*(1-yf);
 
             Func dblurySafe = BoundaryConditions::constant_exterior(dblury, 0, 0, out_w, 0, out_h/8+1, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
 
             Func dblurx("dblurx");
             dblurx(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
 
-            dblurx(xi, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*xf;
-            dblurx(xi+1, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*(1-xf);
+            // dblurx(xi, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*xf;
+            // dblurx(xi+1, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*(1-xf);
 
             Func dblur = BoundaryConditions::constant_exterior(dblurx, 0, 0, out_w/8+1, 0, out_h/8+1, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
 
             dW(x, y, ic, n) = cast(dout.output_types()[0], 0);
-            dW(x, y, ic, n) += dblur(r1.x, r1.y, n, r2.x, r2.y, r1.z) *
+            dW(x, y, ic, n) += dblur(r1.x, r1.y, n, r1.w, 0, r1.z) *
                                    histogram(r1.x*stride + x - pad,
                                               r1.y*stride + y - pad,
-                                              ic, r2.x, r2.y, r1.z);
+                                              ic, r1.w, 0, r1.z);
 
+            dW(x, y, ic, n) += dblur(r1.x, r1.y, n, r1.w, 1, r1.z) *
+                                   histogram(r1.x*stride + x - pad,
+                                              r1.y*stride + y - pad,
+                                              ic, r1.w, 1, r1.z);
 
             // intialize to zero
             db(x) = cast(dout.output_types()[0], 0);
-            db(x) += dout(r1.x, r1.y, x, r2.x, r2.y, r1.z);
+            db(x) += dblur(r1.x, r1.y, x, r1.w, 0, r1.z);
+            db(x) += dblur(r1.x, r1.y, x, r1.w, 1, r1.z);
 
 
             Func dHistogram("dHistogram");
             dHistogram(x, y, ic, z, c, n) = cast(dout.output_types()[0], 0);
-            RDom r4(0, f_w, 0, f_h, 0, num_f);
-            dHistogram(x, y, ic, z, c, n) = dblur(x, y, r3.z, z, c, n) * W(r3.x, r3.y, ic, r3.z);
+            dHistogram(x, y, ic, z, c, n) += dblur(x, y, r4.z, z, c, n) * W(r4.x, r4.y, ic, r4.z);
+            Expr q = clamp(f_in_bound(x,y,ic,n), 0.0f, 1.0f);
+            Expr zix = cast<int>(q * (1.0f/r_sigma) + 0.5f);
 
-            Func uniform1("uniform1");
-            uniform1(x, y, z, n) = 1;
-            RDom r5( 0, s_sigma, 0, s_sigma, 0, cast<int>(1.0f/r_sigma)+1);
+            in_grad(x, y, ic, n) = cast(dout.output_types()[0], 0.f);
 
-            Func uniform("uniform");
-            uniform = BoundaryConditions::constant_exterior(uniform1, 0, 0, in_w, 0, in_h, 0, in_ch);
+            in_grad(x, y, ic, n) += dHistogram((x+s_sigma/2)/s_sigma, (y+s_sigma/2)/s_sigma, ic, zix, r6.x, n);
+
             
-            //TODO in_grad from dHistogram
-            // in_grad(x,y,ic,n) += dHistogram(x, y, ic, r5.z , 0, n) * uniform()
 
+
+
+            //TODO in_grad from dHistogram
             // in_grad(x, y, ic, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, ic, r3.z);
             // RDom r(0, p_w, 0, p_h);
             // pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x,
@@ -553,15 +561,15 @@ class Bilateral: public Layer {
                 Var par1, par2;
                 // put schedule here (if scheduling layers independently)
                 dW.compute_root();         
-                dW.update().fuse(z,n, par).parallel(par);
-                dW.update().unroll(r1.x).unroll(r1.y);
+                // dW.update().fuse(z,n, par).parallel(par);
+                // dW.update().unroll(r1.x).unroll(r1.y);
                 db.compute_root();
                 in_grad.compute_root();
-                in_grad.update().split(y, y_outer, y_inner, y_block_size);
-                in_grad.update().reorder(r3.x,r3.y, x, y_inner, y_outer, r3.z); 
-                in_grad.update().vectorize(x, vec_len);          
-                in_grad.update().fuse(z,n, par2).parallel(par2);
-                in_grad.update().unroll(r3.x).unroll(r3.y);
+                // in_grad.update().split(y, y_outer, y_inner, y_block_size);
+                // in_grad.update().reorder(r3.x,r3.y, x, y_inner, y_outer, r3.z); 
+                // in_grad.update().vectorize(x, vec_len);          
+                // in_grad.update().fuse(z,n, par2).parallel(par2);
+                // in_grad.update().unroll(r3.x).unroll(r3.y);
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -679,9 +687,9 @@ class Convolutional: public Layer {
                 forward.update().vectorize(x, vec_len);          
                 forward.update().fuse(z,n, par).parallel(par);
                 forward.update().unroll(r.x).unroll(r.y);
-                printf("Pseudo-code for the schedule:\n");
-                        forward.print_loop_nest();
-                        printf("\n");
+                // printf("Pseudo-code for the schedule:\n");
+                //         forward.print_loop_nest();
+                //         printf("\n");
 
             }
 
