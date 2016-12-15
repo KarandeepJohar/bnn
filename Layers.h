@@ -374,6 +374,8 @@ class Bilateral: public Layer {
 
             // Normalize
             // Func bilateral_grid("bilateral_grid");
+            forward(x,y,z,n) = 0.0f;
+
             forward(x, y, z, n) = interpolated(x, y, z, 0, n)/interpolated(x, y, z, 1, n);
 
 
@@ -383,7 +385,29 @@ class Bilateral: public Layer {
                 // put schedule here (if scheduling layers independently)
 
                 f_in_bound.compute_root();
-                forward.compute_root();
+                forward.compute_root();//.parallel(y).vectorize(x, 8);
+
+                blur.compute_root();
+
+
+                blur.update().split(y, y_outer, y_inner, y_block_size);
+                blur.update().reorder(r.x,r.y, x, y_inner, y_outer, r.z); 
+                blur.update().vectorize(x, vec_len);          
+                blur.update().fuse(k,c, par1).fuse(z,n, par2).fuse(par1,par2, par).parallel(par);
+                blur.update().unroll(r.x).unroll(r.y);
+                // interpolated.parallel(n);
+                forward.update().fuse(z,n, par).parallel(par);
+
+
+
+                // blurz.compute_root().reorder(c, z, x, y).parallel(y).vectorize(x, 8).unroll(c);
+                // histogram.compute_at(blurz, y);
+                // histogram.update().reorder(c, r.x, r.y, x, y).unroll(c);
+                // blurx.compute_root().reorder(c, x, y, z).parallel(z).vectorize(x, 8).unroll(c);
+                // blury.compute_root().reorder(c, x, y, z).parallel(z).vectorize(x, 8).unroll(c);
+                // bilateral_grid.compute_root();
+
+
                 // printf("Pseudo-code for the schedule:\n");
                 //         forward.print_loop_nest();
                 //         printf("\n");
@@ -464,9 +488,10 @@ class Bilateral: public Layer {
 
             // in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
 
+            RDom r7(0, s_sigma, 0, s_sigma);
+            Expr val = interpolated(x*s_sigma + r7.x, y*s_sigma +r7.y,oc,c,n);
 
-
-            Expr val = interpolated(x, y, oc, c, n);
+            // Expr val = interpolated(x, y, oc, c, n);
             Expr zv = val * (1.0f/r_sigma);
             Expr zi = cast<int>(zv);
             Expr zf = zv - zi;
@@ -478,28 +503,24 @@ class Bilateral: public Layer {
 
             Func dInterpolatedSafe = BoundaryConditions::constant_exterior(dInterpolated, 0, 0, out_w, 0, out_h, 0, num_f, 0, 2, 0, num_samples);
 
-            Func dblurz("dblurz");
-            dblurz(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
-
-            dblurz(x, y, oc, zi, c,n) += dInterpolatedSafe(x,y,oc, c, n)*zf;
-            dblurz(x, y, oc, zi+1, c,n) += dInterpolatedSafe(x,y,oc, c, n)*(1-zf);
-
-            Func dBlurzSafe = BoundaryConditions::constant_exterior(dblurz, 0, 0, out_w, 0, out_h, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
-
-            Func dblury("dblury");
-
-            dblury(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
-            
-            // dblury(x, yi, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*yf;
-            // dblury(x, yi+1, oc, z, c, n) += dBlurzSafe(x,y, oc, z, c, n)*(1-yf);
-
-            Func dblurySafe = BoundaryConditions::constant_exterior(dblury, 0, 0, out_w, 0, out_h/8+1, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
-
             Func dblurx("dblurx");
             dblurx(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
 
-            // dblurx(xi, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*xf;
-            // dblurx(xi+1, y, oc, z, c, n) += dblurySafe(x,y, oc, z, c, n)*(1-xf);
+            dblurx(x, y, oc, z, c, n) += select(z == zi && x == xi && y==yi, xf*yf*zf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi+1 && x == xi && y==yi, (1-zf)*yf*xf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi && x == xi && y==yi+1, xf*(1-yf)*zf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi+1 && x == xi && y==yi+1, (1-zf)*(1-yf)*xf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi && x == xi+1 && y==yi, (1-xf)*yf*zf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi+1 && x == xi+1 && y==yi, (1-zf)*yf*(1-xf)*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi && x == xi+1 && y==yi+1, (1-xf)*(1-yf)*zf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
+
+            dblurx(x, y, oc, z, c, n) += select(z == zi+1 && x == xi+1 && y==yi+1, (1-zf)*(1-yf)*(1-xf)*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
 
             Func dblur = BoundaryConditions::constant_exterior(dblurx, 0, 0, out_w/8+1, 0, out_h/8+1, 0, num_f, 0, cast<int>(1.0f/r_sigma+1), 0, 2, 0, num_samples);
 
@@ -531,32 +552,6 @@ class Bilateral: public Layer {
             in_grad(x, y, ic, n) += dHistogram((x+s_sigma/2)/s_sigma, (y+s_sigma/2)/s_sigma, ic, zix, r6.x, n);
 
             
-
-
-
-            //TODO in_grad from dHistogram
-            // in_grad(x, y, ic, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, ic, r3.z);
-            // RDom r(0, p_w, 0, p_h);
-            // pool_argmax(x, y, z, n) = argmax(f_in_bound(x * stride + r.x,
-            //                                      y * stride + r.y,
-            //                                      z, n));
-
-            // RDom r2(0, this->out_dim_size(0), 0, this->out_dim_size(1));
-            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
-
-            // Expr x_bin = clamp(r2.x * stride +
-            //                    pool_argmax(r2.x, r2.y, z, n)[0]-pad, 0, in_w);
-            // Expr y_bin = clamp(r2.y * stride +
-            //                    pool_argmax(r2.x, r2.y, z, n)[1]-pad, 0, in_h);
-
-            // in_grad(x_bin, y_bin, z, n) += dout(r2.x, r2.y, z, n);
-
-            // RDom r2(0, num_f);
-            // // intialize to zero
-            // in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
-            // RDom r3(0, f_w, 0, f_h, 0, num_f);
-
-            // in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, z, r3.z);
             if (schedule) {
                 Var par1, par2;
                 // put schedule here (if scheduling layers independently)
@@ -565,11 +560,6 @@ class Bilateral: public Layer {
                 // dW.update().unroll(r1.x).unroll(r1.y);
                 db.compute_root();
                 in_grad.compute_root();
-                // in_grad.update().split(y, y_outer, y_inner, y_block_size);
-                // in_grad.update().reorder(r3.x,r3.y, x, y_inner, y_outer, r3.z); 
-                // in_grad.update().vectorize(x, vec_len);          
-                // in_grad.update().fuse(z,n, par2).parallel(par2);
-                // in_grad.update().unroll(r3.x).unroll(r3.y);
             }
 
             ////////////////////////////////////////////////////////////////////
