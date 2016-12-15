@@ -3,6 +3,7 @@
 #include<iterator>
 #include<assert.h>
 #include<random>
+#include<string.h>
 
 #include "Halide.h"
 #include "halide_image_io.h"
@@ -118,6 +119,70 @@ void load_cifar_batch_random(std::string bin_path, int batch_size,
     }
 }
 
+void load_tilenet_batch_random(int batch_size,
+                             Halide::Image<float> &batch,
+                             Halide::Image<int> &image_labels) {
+
+
+    int n_rows = 64;
+    int n_cols = 64;
+
+    int number_of_images = 10000;
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, number_of_images - 1);
+
+    for(int i = 0; i < batch_size; ++i) {
+        // Draw a random index
+        int index = dis(gen);
+        Halide::Image<uint8_t> input = Halide::Tools::load_image("data/" + std::to_string(index) + ".png");
+        Halide::Image<uint8_t> label = Halide::Tools::load_image("data/" + std::to_string(index) + "_label.png");
+        // printf("Selecting Image %d\n", index);
+        for(int ch = 0; ch < 3; ++ch) {
+            for(int c = 0; c < n_cols; ++c) {
+                for(int r = 0; r < n_rows; ++r) {
+                    batch(r, c, ch, i) = (float) input(r, c, ch);
+                }
+            }
+        }
+        for(int c = 0; c < n_cols; ++c) {
+            for(int r = 0; r < n_rows; ++r) {
+                image_labels(r, c, i) = (float) label(r, c);
+            }
+        }
+    }
+}
+void load_tilenet_batch(int batch_size,
+                      int index,
+                      Halide::Image<float> &batch,
+                      Halide::Image<int> &image_labels) {
+
+    int n_rows = 64;
+    int n_cols = 64;
+
+    int number_of_images = 1000;
+
+    int num_images_to_read = std::min(number_of_images - index, batch_size);
+
+    for(int i = 0; i < num_images_to_read; ++i) {
+        Halide::Image<uint8_t> input = Halide::Tools::load_image("test/" + std::to_string(index) + ".png");
+        Halide::Image<uint8_t> label = Halide::Tools::load_image("test/" + std::to_string(index) + "_label.png");
+        for(int ch = 0; ch < 3; ++ch) {
+            for(int c = 0; c < n_cols; ++c) {
+                for(int r = 0; r < n_rows; ++r) {
+                    batch(r, c, ch, i) = (float) input(r, c, ch);
+                }
+            }
+        }
+        for(int c = 0; c < n_cols; ++c) {
+            for(int r = 0; r < n_rows; ++r) {
+                image_labels(r, c, i) = (float) label(r, c);
+            }
+        }
+        index++;
+    }
+}
 void load_cifar_batch(std::string bin_path, int batch_size,
                       int index, Halide::Image<float> mean,
                       Halide::Image<float> &batch,

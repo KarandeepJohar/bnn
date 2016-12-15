@@ -22,6 +22,14 @@ void load_cifar_batch_random(std::string bin_path, int batch_size,
                              Image<float> &batch,
                              Image<int> &image_labels);
 
+void load_tilenet_batch_random(int batch_size,
+                             Image<float> &batch,
+                             Image<int> &image_labels);
+void load_tilenet_batch(int batch_size,
+                      int index,
+                      Image<float> &batch,
+                      Image<int> &image_labels);
+
 void compute_cifar_mean(std::string bin_path, Image<float> &mean);
 
 int get_cifar_num_images(std::string bin_path);

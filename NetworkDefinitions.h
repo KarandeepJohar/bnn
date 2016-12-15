@@ -760,3 +760,73 @@ void ToyNet::define_backward(Image<int> labels) {
     layers["relu1"]->define_gradients(layers["bil1"]->f_input_grads[0]);
     layers["conv1"]->define_gradients(layers["relu1"]->f_input_grads[0]);
 }
+
+class TileNet: public Network {
+    public:
+        TileNet() : Network() {}
+        void define_forward(int batch_size, int data_width, int data_height);
+        void define_backward(Image<int> labels);
+};
+void TileNet::define_forward(int batch_size, int data_width, int data_height) {
+
+    // Network structure
+    // input -> conv1 -> relu1 -> conv2 -> relu2 -> conv3 -> prob
+
+    std::vector<Layer*> layer_list;
+
+    int channels = 3;
+
+    Image<float> input(data_width, data_height, channels, batch_size);
+
+    DataLayer *d_layer = new DataLayer("input", input);
+    layer_list.push_back(d_layer);
+
+    int num_filters = 32;
+    int filter_width = 9;
+    int filter_height = 9;
+    int pad = (filter_width-1)/2; // padding required to handle boundaries
+    int stride = 1; // stride at which the filter is evaluated
+
+    Convolutional *conv1  = new Convolutional("conv1", num_filters,
+                                               filter_width, filter_height, pad,
+                                               stride, d_layer);
+    layer_list.push_back(conv1);
+
+    ReLU *relu1 = new ReLU("relu1", conv1);
+    layer_list.push_back(relu1);
+
+    Convolutional *conv2  = new Convolutional("conv2", 16,
+                                               filter_width, filter_height, pad,
+                                               stride, relu1);
+    layer_list.push_back(conv2);
+
+    ReLU *relu2 = new ReLU("relu2", conv2);
+    layer_list.push_back(relu2);
+    Convolutional *conv3  = new Convolutional("conv3", 2,
+                                               filter_width, filter_height, pad,
+                                               stride, relu2);
+    layer_list.push_back(conv3);
+
+    Flatten2 *flatten = new Flatten2("flatten", conv3);
+    layer_list.push_back(flatten);
+
+    SoftMax *softm = new SoftMax("prob", flatten);
+    layer_list.push_back(softm);
+
+    sub_pipeline_end_points.push_back(std::make_pair(softm->name, "input"));
+
+    // Add the layers to the layer map
+    for (auto l: layer_list) {
+        layers[l->name] = l;
+    }
+}
+
+void TileNet::define_backward(Image<int> labels) {
+    layers["prob"]->define_gradients(Func(labels));
+    layers["flatten"]->define_gradients(layers["prob"]->f_input_grads[0]);
+    layers["conv3"]->define_gradients(layers["flatten"]->f_input_grads[0]);
+    layers["relu2"]->define_gradients(layers["conv3"]->f_input_grads[0]);
+    layers["conv2"]->define_gradients(layers["relu2"]->f_input_grads[0]);
+    layers["relu1"]->define_gradients(layers["conv2"]->f_input_grads[0]);
+    layers["conv1"]->define_gradients(layers["relu1"]->f_input_grads[0]);
+}

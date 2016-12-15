@@ -9,7 +9,7 @@ CUDA_INC += -I$(CUDA_PATH)/include
 
 LDFLAGS += -lHalide -L$(HALIDE_PATH)/bin -lpng
 
-all: inference training
+all: inference training tilenet
 
 ModelIO.o: ModelIO.h ModelIO.cpp
 	$(CXX) $(CXXFLAGS) ModelIO.cpp -c $(HALIDE_INC) $(CUDA_INC)
@@ -23,5 +23,8 @@ inference: Inference.cpp DataLoaders.o ModelIO.o NetworkDefinitions.h Layers.h
 training: Training.cpp DataLoaders.o ModelIO.o NetworkDefinitions.h Layers.h
 	$(CXX) $(CXXFLAGS) Training.cpp DataLoaders.o ModelIO.o $(HALIDE_INC) $(LDFLAGS) -o training
 
+tilenet: Training_TileNet.cpp DataLoaders.o ModelIO.o NetworkDefinitions.h Layers.h
+	$(CXX) $(CXXFLAGS) Training_TileNet.cpp DataLoaders.o ModelIO.o $(HALIDE_INC) $(LDFLAGS) -o tilenet
+
 clean:
-	rm -rf ModelIO.o DataLoaders.o inference training
+	rm -rf ModelIO.o DataLoaders.o inference training tilenet

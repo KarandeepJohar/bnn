@@ -293,7 +293,7 @@ class Bilateral: public Layer {
         Func interpolated;
         Func histogram;
 
-        Var y_t, z_t, par;
+        Var y_t, z_t, par, par1, par2;
         Halide::Var y_outer, y_inner, z_outer, z_inner, x_inner, x_outer;
         int o_block_size = 16;
         int y_block_size = 8;
@@ -353,7 +353,7 @@ class Bilateral: public Layer {
             RDom r1(0, f_w, 0, f_h, 0, in_ch);
 
             Func blur("blur");
-            blur(x, y, z, k, c, n) += b(z);
+            blur(x, y, z, k, c, n) = b(z);
             blur(x, y, z, k, c, n) += (histogram(x * stride + r1.x - pad,
                                                  y * stride + r1.y - pad,
                                                  r1.z, k, c, n) * W(r1.x, r1.y, r1.z, z));
@@ -386,16 +386,15 @@ class Bilateral: public Layer {
 
                 f_in_bound.compute_root();
                 forward.compute_root();//.parallel(y).vectorize(x, 8);
-
+                histogram.compute_root();
                 blur.compute_root();
 
 
                 blur.update().split(y, y_outer, y_inner, y_block_size);
-                blur.update().reorder(r.x,r.y, x, y_inner, y_outer, r.z); 
+                blur.update().reorder(r1.x,r1.y, x, y_inner, y_outer, r1.z); 
                 blur.update().vectorize(x, vec_len);          
-                blur.update().fuse(k,c, par1).fuse(z,n, par2).fuse(par1,par2, par).parallel(par);
-                blur.update().unroll(r.x).unroll(r.y);
-                // interpolated.parallel(n);
+                blur.update().fuse(z,n, par2).fuse(k,c, par1).fuse(par1,par2, par).parallel(par);
+                blur.update().unroll(r1.x).unroll(r1.y);
                 forward.update().fuse(z,n, par).parallel(par);
 
 
@@ -408,9 +407,9 @@ class Bilateral: public Layer {
                 // bilateral_grid.compute_root();
 
 
-                // printf("Pseudo-code for the schedule:\n");
-                //         forward.print_loop_nest();
-                //         printf("\n");
+                printf("Pseudo-code for the schedule:\n");
+                        forward.print_loop_nest();
+                        printf("\n");
 
             }
 
@@ -504,7 +503,7 @@ class Bilateral: public Layer {
             Func dInterpolatedSafe = BoundaryConditions::constant_exterior(dInterpolated, 0, 0, out_w, 0, out_h, 0, num_f, 0, 2, 0, num_samples);
 
             Func dblurx("dblurx");
-            dblurx(x, y, oc, z, c, n) = cast(dout.output_types()[0], 0);
+            dblurx(x, y, oc, z, c, n) = 0.0f;
 
             dblurx(x, y, oc, z, c, n) += select(z == zi && x == xi && y==yi, xf*yf*zf*dInterpolated(x*s_sigma + r7.x,y*s_sigma + r7.y,oc,c,n), 0);
 
@@ -555,11 +554,27 @@ class Bilateral: public Layer {
             if (schedule) {
                 Var par1, par2;
                 // put schedule here (if scheduling layers independently)
-                dW.compute_root();         
+                interpolated.compute_root();
+                dblurx.compute_root();
+                dW.compute_root();
+                db.compute_root();
+                dHistogram.compute_root();
+                dHistogram.update().split(y, y_outer, y_inner, y_block_size);
+                dHistogram.update().reorder(r4.x,r4.y, x, y_inner, y_outer, r4.z); 
+                dHistogram.update().vectorize(x, vec_len);          
+                dHistogram.update().fuse(z,n, par2).parallel(par2);
+                dHistogram.update().unroll(r4.x).unroll(r4.y);
+
+                dW.update().fuse(ic,n, par).parallel(par);
+                dW.update().unroll(r1.x).unroll(r1.y);
                 // dW.update().fuse(z,n, par).parallel(par);
                 // dW.update().unroll(r1.x).unroll(r1.y);
-                db.compute_root();
                 in_grad.compute_root();
+
+
+                printf("Pseudo-code for the BACK-PROP schedule:\n");
+                        forward.print_loop_nest();
+                        printf("\n");
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -1568,3 +1583,67 @@ class Flatten: public Layer {
         }
 };
 
+/*
+ * Flatten2 layer takes a multi-dimensional input and "flattens" it
+ * into a one dimensional input.  Flattening occurs across space and
+ * across channels, and across samples (images in a batch)
+ *
+ * Example: an input that was 32x32x4xBATCH_SIZE would be flattened to
+ * a 4x1024*BATCH_SIZE output
+ */
+class Flatten2: public Layer {
+    public:
+        int out_width;
+        int num_samples;
+
+        // Halide vars
+        Var x, y, z, n;
+
+        Flatten2(std::string _name, Layer *in, bool schedule = true) : Layer(_name, in) {
+            assert(in->out_dims() == 4);
+            num_samples = inputs[0]->out_dim_size(2);
+
+            // define forward
+            int w = inputs[0]->out_dim_size(0);
+            int h = inputs[0]->out_dim_size(1);
+            out_width = w * h * inputs[0]->out_dim_size(3);
+            forward(n, x) = inputs[0]->forward(x%w, (x%(w*h))/w, n, x/(w*h));
+
+            printf("Output channels: %d x %d\n", num_samples, out_width);
+
+            if (schedule) {
+                // forward.compute_root().parallel(n);
+                forward.compute_root();
+            }
+        }
+
+        void define_gradients(Func dout, bool schedule = true) {
+            check_defined(dout);
+            assert(f_input_grads.size() == 0);
+
+            Func in_grad(name + "_in_grad");
+            int w = inputs[0]->out_dim_size(0);
+            int h = inputs[0]->out_dim_size(1);
+            printf(" Input gradients size %d x %d\n", w, h);
+            in_grad(x, y, n, z) = dout(n, z*w*h + y*w + x);
+
+            f_input_grads.push_back(in_grad);
+
+            if (schedule) {
+                in_grad.compute_root();
+            }
+        }
+
+        int out_dims() { return 2; }
+
+        int out_dim_size(int i) {
+            assert(i < 2);
+            int size = 0;
+            if (i == 0) {
+                size = num_samples;
+            } else if (i == 1) {
+                size = out_width;
+            }
+            return size;
+        }
+};
