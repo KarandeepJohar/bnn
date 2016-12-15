@@ -807,7 +807,7 @@ void TileNet::define_forward(int batch_size, int data_width, int data_height) {
                                                filter_width, filter_height, pad,
                                                stride, relu2);
     layer_list.push_back(conv3);
-
+    
     Flatten2 *flatten = new Flatten2("flatten", conv3);
     layer_list.push_back(flatten);
 

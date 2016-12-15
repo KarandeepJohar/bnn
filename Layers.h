@@ -691,30 +691,27 @@ class SoftMax: public Layer {
             num_classes = in->out_dim_size(0);
             num_samples = in->out_dim_size(1);
 
-            printf("NClasses: %d, NSamples: %d\n", num_classes, num_samples);
-
             ////////////////////////////////////////////////////////////////////
             // begin student code here
             //
             // Code should define forward(in_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
-            Func maxIn;
-            Func expInput;
-            Func denominator;
-
-            RDom sum_reduction(0, num_classes);
-            maxIn(n) = maximum(in_f(sum_reduction, n));
-            expInput(in_dim, n) = exp(in_f(in_dim, n)-maxIn(n));
-            denominator(n) = sum(expInput(sum_reduction, n));
-            forward(in_dim, n) =  expInput(in_dim, n) / denominator(n);
+            // forward(in_dim, n) = 0.f;
+            Func exp_max, expo, normalizer;
+            RDom r(0, num_classes);
+            exp_max(n) = maximum(in_f(r.x, n));
+            expo(in_dim, n) = exp(in_f(in_dim, n) - exp_max(n));
+            normalizer(n) = cast(in_f.output_types()[0], 0);
+            normalizer(n) += expo(r.x, n);
+            forward(in_dim, n) = expo(in_dim, n)/normalizer(n);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
-                maxIn.compute_at(forward, n);
-                expInput.compute_at(forward, n);
-                denominator.compute_at(forward, n);
-                forward.compute_root();
-                forward.parallel(n);
+                exp_max.compute_at(forward, n);
+                expo.compute_at(forward, n);
+                normalizer.compute_at(forward, n);
+                forward.compute_root().parallel(n);
+                // forward.compute_root();
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -741,14 +738,14 @@ class SoftMax: public Layer {
             // Note there are no parameter derivatives since the
             // softMax has no learnable parameters.
             ////////////////////////////////////////////////////////////////////
-            // Expr label = clamp(labels(n), 0, num_classes - 1);
-            Expr trueClass = (forward(in_dim, n) - 1);
-            Expr falseClass = forward(in_dim, n);
-            in_grad(in_dim, n) = select(in_dim == labels(n), trueClass, falseClass);
+            Expr label = clamp(labels(n), 0, num_classes -1);
+            Expr t = (forward(in_dim, n) - 1)/num_samples;
+            Expr f = (forward(in_dim, n)/num_samples);
+            in_grad(in_dim, n) = select(in_dim == label, t, f);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
-                in_grad.compute_root().parallel(n);
+                in_grad.compute_root();
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -778,11 +775,17 @@ class SoftMax: public Layer {
             Func clamped;
 
             //Weird Halide requirement
-            clamped(x) = max(0, min(labels(x), num_samples-1));
-            float normalize = -1.0/ num_samples;
+            // clamped(x) = max(0, min(labels(x), num_samples-1));
+            // float normalize = -1.0/ num_samples;
             RDom r(0, num_samples);
-            loss_p(x) = 0.f;
-            loss_p(x) += normalize*log(forward(clamped(r),r));
+            loss_p(x) = cast(forward.output_types()[0], 0);
+
+            loss_p(0) += -log(forward(clamp(labels(r.x), 0, num_classes - 1),
+                                      r.x));
+            printf("788 num_samples %d\n", num_samples);
+            loss_p(0)/= num_samples;
+
+            // loss_p(x) += normalize*log(forward(clamped(r),r));
 
             ////////////////////////////////////////////////////////////////////
             // end student code here
@@ -1266,26 +1269,31 @@ class Flatten: public Layer {
 class Flatten2: public Layer {
     public:
         int out_width;
-        int num_samples;
+        int num_classes;
 
         // Halide vars
         Var x, y, z, n;
 
         Flatten2(std::string _name, Layer *in, bool schedule = true) : Layer(_name, in) {
             assert(in->out_dims() == 4);
-            num_samples = inputs[0]->out_dim_size(2);
+            num_classes = inputs[0]->out_dim_size(2);
 
             // define forward
             int w = inputs[0]->out_dim_size(0);
             int h = inputs[0]->out_dim_size(1);
+            printf("Flatten2 w: %d h %d\n", w, h);
+
             out_width = w * h * inputs[0]->out_dim_size(3);
             forward(n, x) = inputs[0]->forward(x%w, (x%(w*h))/w, n, x/(w*h));
 
-            printf("Output channels: %d x %d\n", num_samples, out_width);
+            printf("Output channels: %d x %d\n", num_classes, out_width);
 
             if (schedule) {
                 // forward.compute_root().parallel(n);
                 forward.compute_root();
+                printf("Pseudo-code for the BACK-PROP schedule:\n");
+                        forward.print_loop_nest();
+                        printf("\n");
             }
         }
 
@@ -1312,7 +1320,7 @@ class Flatten2: public Layer {
             assert(i < 2);
             int size = 0;
             if (i == 0) {
-                size = num_samples;
+                size = num_classes;
             } else if (i == 1) {
                 size = out_width;
             }

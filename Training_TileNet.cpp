@@ -190,7 +190,7 @@ int main(int argc, char **argv) {
     // buffers to store network loss (a single number) and the
     // per-class score outputs of the softmax layer
     int num_classes = toy.layers["prob"]->out_dim_size(0);
-    printf("Num classes: %d\n", num_classes);
+    printf("Training Tilenet 193 Num classes: %d\n", num_classes);
     Image<float> scores(num_classes, batch_size*data_width*data_height);
     Image<float> loss(1);
 

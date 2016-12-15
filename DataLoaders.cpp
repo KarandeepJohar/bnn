@@ -136,19 +136,20 @@ void load_tilenet_batch_random(int batch_size,
     for(int i = 0; i < batch_size; ++i) {
         // Draw a random index
         int index = dis(gen);
-        Halide::Image<uint8_t> input = Halide::Tools::load_image("data/" + std::to_string(index) + ".png");
-        Halide::Image<uint8_t> label = Halide::Tools::load_image("data/" + std::to_string(index) + "_label.png");
+        Halide::Image<uint8_t> input = Halide::Tools::load_image("/afs/andrew.cmu.edu/usr8/kjohar/15-769/asst2/data/" + std::to_string(index) + ".png");
+        Halide::Image<uint8_t> label = Halide::Tools::load_image("/afs/andrew.cmu.edu/usr8/kjohar/15-769/asst2/data/" + std::to_string(index) + "_label.png");
         // printf("Selecting Image %d\n", index);
         for(int ch = 0; ch < 3; ++ch) {
             for(int c = 0; c < n_cols; ++c) {
                 for(int r = 0; r < n_rows; ++r) {
-                    batch(r, c, ch, i) = (float) input(r, c, ch);
+                    batch(r, c, ch, i) = ((float) input(r, c, ch))/255.0;
                 }
             }
         }
         for(int c = 0; c < n_cols; ++c) {
             for(int r = 0; r < n_rows; ++r) {
-                image_labels(r, c, i) = (float) label(r, c);
+                // printf("label %f\n", (float) label(r, c));
+                image_labels(r, c, i) = (float) label(r, c)/255;
             }
         }
     }
@@ -166,8 +167,8 @@ void load_tilenet_batch(int batch_size,
     int num_images_to_read = std::min(number_of_images - index, batch_size);
 
     for(int i = 0; i < num_images_to_read; ++i) {
-        Halide::Image<uint8_t> input = Halide::Tools::load_image("test/" + std::to_string(index) + ".png");
-        Halide::Image<uint8_t> label = Halide::Tools::load_image("test/" + std::to_string(index) + "_label.png");
+        Halide::Image<uint8_t> input = Halide::Tools::load_image("/afs/andrew.cmu.edu/usr8/kjohar/15-769/asst2/test/" + std::to_string(index) + ".png");
+        Halide::Image<uint8_t> label = Halide::Tools::load_image("/afs/andrew.cmu.edu/usr8/kjohar/15-769/asst2/test/" + std::to_string(index) + "_label.png");
         for(int ch = 0; ch < 3; ++ch) {
             for(int c = 0; c < n_cols; ++c) {
                 for(int r = 0; r < n_rows; ++r) {
