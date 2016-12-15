@@ -142,14 +142,16 @@ void load_tilenet_batch_random(int batch_size,
         for(int ch = 0; ch < 3; ++ch) {
             for(int c = 0; c < n_cols; ++c) {
                 for(int r = 0; r < n_rows; ++r) {
+                    // printf("%f\n", ((float) input(r, c, ch))/255.0);
                     batch(r, c, ch, i) = ((float) input(r, c, ch))/255.0;
+                    // printf("label %d:\n", label(r,c,ch));
                 }
             }
         }
         for(int c = 0; c < n_cols; ++c) {
             for(int r = 0; r < n_rows; ++r) {
                 // printf("label %f\n", (float) label(r, c));
-                image_labels(r, c, i) = (float) label(r, c)/255;
+                image_labels(i*n_cols*n_rows+c*n_rows+r) = (float) label(r, c, 1)/255.0;
             }
         }
     }
@@ -172,17 +174,22 @@ void load_tilenet_batch(int batch_size,
         for(int ch = 0; ch < 3; ++ch) {
             for(int c = 0; c < n_cols; ++c) {
                 for(int r = 0; r < n_rows; ++r) {
-                    batch(r, c, ch, i) = (float) input(r, c, ch);
+                    batch(r, c, ch, i) = ((float) input(r, c, ch))/255.0;
                 }
             }
         }
         for(int c = 0; c < n_cols; ++c) {
             for(int r = 0; r < n_rows; ++r) {
-                image_labels(r, c, i) = (float) label(r, c);
+
+                image_labels(i*n_cols*n_rows+c*n_rows+r) = (float) label(r, c,1)/255.0;
+
             }
         }
         index++;
     }
+
+
+
 }
 void load_cifar_batch(std::string bin_path, int batch_size,
                       int index, Halide::Image<float> mean,

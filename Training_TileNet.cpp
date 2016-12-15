@@ -289,7 +289,7 @@ int main(int argc, char **argv) {
             // perform and forward/backward pass to compute gradients from
             // this minibatch
             load_tilenet_batch_random(batch_size, data_layer->input, training_labels);
-
+            
             // run forward evaluation and back-prop to compute gradients
             training_pipeline.realize(
                 {loss, scores,
@@ -365,7 +365,78 @@ int main(int argc, char **argv) {
                             break;
                     }
                 }
+
+
             }
+
+            // std::cout << "Running inference on test set to check accuracy of the trainined network..." << std::endl;
+
+
+            // int num_test_images = 1000;
+
+            // std::vector<Func> test_outs;
+            // test_outs.push_back(toy.layers["prob"]->forward);
+            // Pipeline test_pipeline(test_outs);
+
+            // size_t num_batches = num_test_images/batch_size;
+            // int num_total = 0;
+            // int num_correct = 0;
+            // int num_1 = 0;
+            // for (size_t b_id = 0; b_id < num_batches; b_id++) {
+
+            //     auto start = std::chrono::steady_clock::now();
+
+            //     int image_index = b_id * batch_size;
+            //     load_tilenet_batch(batch_size, image_index,
+            //                      data_layer->input, training_labels);
+            //     int max_index = std::min(batch_size, num_test_images - image_index);
+
+            //     for (int l = 0; l < max_index*data_height*data_width; l++) {
+            //         if (training_labels(l)==1)
+            //         {
+            //             num_1++;
+            //         }
+            //     }
+            //     test_pipeline.realize({scores});
+
+            //     int n = 0;
+
+            //     // for all images in the batch, check the predicted class
+            //     // label against the ground truth class label
+            //     for (int l = 0; l < max_index*data_height*data_width; l++) {
+            //         // find max score
+            //         int best_class = 0;
+            //         float best_score = 0.0f;
+            //         for (int c = 0; c < scores.extent(0); c++) {
+            //             if (scores(c, n) > best_score) {
+            //                 best_score = scores(c, n);
+            //                 best_class = c;
+            //             }
+            //         }
+                    
+            //         // check against ground truth
+            //         if (best_class == training_labels(l)) {
+            //             if((int)best_class==1)
+            //             printf("best_class %d\n", best_class);
+            //             num_correct++;
+            //         }
+
+            //         num_total++;
+            //         n++;
+
+
+            //     }
+
+            //     auto end = std::chrono::steady_clock::now();
+            //     int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            //     std::cout << "Batch time (inference): " << elapsed
+            //         << "ms" << " (" <<  ((float)elapsed / batch_size) << " ms/image)" << std::endl;
+            // }
+            // printf("num_Correct %d num_total: %d num_1 %d\n", num_correct, num_total, num_1);
+            // std::cout << "Test set accuracy: " << (float)num_correct/num_total << std::endl;
+
+
+
 
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
@@ -437,7 +508,7 @@ int main(int argc, char **argv) {
 
         // for all images in the batch, check the predicted class
         // label against the ground truth class label
-        for (int l = 0; l < max_index; l++) {
+        for (int l = 0; l < max_index*data_height*data_width; l++) {
 
             // find max score
             int best_class = 0;

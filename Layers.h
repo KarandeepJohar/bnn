@@ -272,8 +272,9 @@ class Convolutional: public Layer {
         Func f_in_bound;
 
         Convolutional(std::string _name, int _num_f, int _f_w, int _f_h,
-                      int _pad, int _stride, Layer* in,
-                      bool schedule=true) : Layer(_name, in) {
+                      int _pad, int _stride, Layer* _in,
+                      bool schedule = true) :
+                      Layer(_name, _in) {
 
             Func _f_in_bound(name + "_f_in_bound");
             f_in_bound = _f_in_bound;
@@ -302,45 +303,86 @@ class Convolutional: public Layer {
             params.push_back(W);
             params.push_back(b);
 
-            ////////////////////////////////////////////////////////////////////
-            // start student code here
-            //
-            // Code should define forward(x, y, z, n) = ...
-            ////////////////////////////////////////////////////////////////////
-
             RDom r(0, f_w, 0, f_h, 0, in_ch);
-            // forward(x, y, z, n) = sum(W(r.x, r.y, r.z, z) * 
-            //                 f_in_bound(x*stride + r.x - pad, y*stride + r.y - pad, r.z, n))
-            //                 + b(z);
+            // initialize to bias
+            Func stage(name + "_stage");
+            stage(x, y, z, n) = b(z);
+            stage(x, y, z, n) += W(r.x, r.y, r.z, z) * f_in_bound(x*stride + r.x - pad,
+                                                                    y*stride + r.y - pad,
+                                                                    r.z, n);
+            forward(x, y, z, n) = stage(x, y, z, n);
+            /*
             forward(x, y, z, n) = b(z);
-            forward(x, y, z, n) += W(r.x, r.y, r.z, z) * 
-                            f_in_bound(x*stride + r.x - pad, y*stride + r.y - pad, r.z, n);
+            forward(x, y, z, n) += W(r.x, r.y, r.z, z) * f_in_bound(x*stride + r.x - pad,
+                                                                    y*stride + r.y - pad,
+                                                                    r.z, n);
+            */
+
             if (schedule) {
-                // put schedule here (if scheduling layers independently)
-                int vectorLength = 8;
-                
+                // Basic schedule
+                /*
+                f_in_bound.compute_root();
+                forward.compute_root().parallel(n).vectorize(x, 16);
+                forward.update().parallel(n);
+                forward.update().vectorize(x, 16);
+                */
+
+                // Resonable effort
+                /*
+                int out_filter_block_size = num_f % 4  == 0 ? 4 : 1;
+                int y_block_size = 4;
+                int vec_len = 8;
+                Var z_t, y_t;
+
+                f_in_bound.compute_root();
+                forward.compute_root().parallel(n).parallel(z).vectorize(x, 2 * vec_len);
+                forward.update().split(z, z, z_t, out_filter_block_size);
+                if ((1 + (in_h + 2 * pad - f_h)/stride) >= 2 * y_block_size) {
+                    forward.update().split(y, y, y_t, y_block_size);
+                    forward.update().reorder(y_t, z_t, r.z, y, z);
+                    forward.update().parallel(n).parallel(z);
+                } else {
+                    forward.update().reorder(z_t, r.z, y, z);
+                    forward.update().parallel(n).parallel(z);
+                }
+
+                if (f_w <= 3 && f_h <= 3) {
+                    forward.update().unroll(r.x).unroll(r.y);
+                } else if (stride > 1) {
+                    forward.update().unroll(r.x, stride).unroll(r.y, stride);
+                }
+
+                forward.update().vectorize(x, 2 * vec_len);
+                */
+
+                int out_filter_block_size = num_f % 4  == 0 ? 4 : 1;
+                int y_block_size = 4;
+                int vec_len = 8;
+                Var z_t, y_t;
+                RVar rz_t;
+
                 f_in_bound.compute_root();
 
-                Var fused, x_outer, y_outer, y_inner, x_inner;
+                forward.split(y, y, y_t, y_block_size);
+                forward.split(z, z, z_t, out_filter_block_size);
+                forward.reorder(x, y_t, z_t, y, z, n);
+
+                stage.compute_at(forward, y).vectorize(x, 2 * vec_len);
+
+                //stage.update().split(r.z, r.z, rz_t, out_filter_block_size);
+                stage.update().reorder(r.x, r.y, x, y, z, r.z);
+                if (f_w <= 3 && f_h <= 3) {
+                    stage.update().unroll(r.x).unroll(r.y);
+                } else if (stride > 1) {
+                    stage.update().unroll(r.x, stride).unroll(r.y, stride);
+                }
+
+                stage.update().vectorize(x, 2 * vec_len);
 
                 forward.compute_root();
-                forward.fuse(z, n, fused);
-                forward.tile(x, y, x_outer, y_outer, x_inner, y_inner, 16, 16);
-                forward.reorder(x_inner, y_inner, x_outer, y_outer);
-                forward.vectorize(x_inner, vectorLength);
-                forward.parallel(fused);
+                forward.parallel(n).parallel(z).vectorize(x, vec_len);
 
-                forward.update().tile(x, y, x_outer, y_outer, x_inner, y_inner, 16, 16);
-                forward.update().reorder(x_inner, y_inner, x_outer, y_outer, r.z);
-                forward.update().vectorize(x_inner, vectorLength);
-                forward.update().fuse(z, n, fused);
-                forward.update().parallel(fused);
             }
-
-            ////////////////////////////////////////////////////////////////////
-            // end student code here
-            ////////////////////////////////////////////////////////////////////
-
         }
 
        /*
@@ -350,16 +392,15 @@ class Convolutional: public Layer {
         * gradients given dout = dLoss/layer
         */
         void define_gradients(Func dout, bool schedule = true) {
+
             check_defined(dout);
             assert(f_input_grads.size() == 0);
 
             Func in_grad(name + "_in_grad");
-            Func in_grad_out(name + "_in_grad_clamped");
             Func dW(name + "_dW"), db(name + "_db");
 
             int out_w = this->out_dim_size(0);
             int out_h = this->out_dim_size(1);
-            // int out_ch = this->out_dim_size(3);
 
             Image<float> W = params[0];
             Image<float> b = params[1];
@@ -382,56 +423,29 @@ class Convolutional: public Layer {
             //                    db(x) = ...
             //                    in_grad(x, y, z, n) = ...
             ////////////////////////////////////////////////////////////////////
-            // RDom r(0, out_w, 0, out_h, 0, num_samples);
-            
-            // //W is x,y in_ch, out_ch
-            // dW(x, y, z, n) = sum(dout(r.x, r.y, n, r.z) * f_in_bound(r.x*stride + x - pad, r.y*stride + y - pad, z, r.z));
-            // RDom r1(0, out_w, 0, out_h, 0, num_samples);
-            // db(x) = dout(r1.x, r1.y, x, r1.z);
-
-            // // in_grad(x, y, z, n) = sum(dout(x, y, r1.x, n) * W(x, y, z, r1.y));
-            // // in_grad_out(x,y,z,n) = f_in_bound = BoundaryConditions::constant_exterior(in_grad, 0,
-            // //                                                    0, in_w, 0, in_h);
-            // // in_grad_out(x,y,z,n) =  0.0;
-            // // in_grad_out(x*stride + r1.x - pad, y*stride + r1.y - pad, r1.z, n) += W(f_w - r1.x, f_h - r1.y, r1.z, z) * 
-            // //                 dout(x, y, z, n);
-            // Func d_in_bound(name + "_d_in");
-            // d_in_bound = BoundaryConditions::constant_exterior(dout, 0, 0, out_w, 0, out_h);
-
-            RDom r3(0, f_w, 0, f_h, 0, num_f);
-            in_grad(x, y, z, n) = 0.f;
-            // in_grad(x, y, z, n) += W(f_w - r3.x, f_h - r3.y, z, r3.z) * d_in_bound(x, y, r3.z, n); //rotated filter
-
-            //Due to the nature of toynet the rotation, padding and stride is ignored
-            in_grad(x, y, z, n) += dout(x, y, r3.z, n) * W(r3.x, r3.y, z, r3.z);
 
             RDom r1(0, out_w, 0, out_h, 0, num_samples);
 
-            // intialize to regularized weights
-            dW(x, y, z, n) = 0.f;
-            dW(x, y, z, n) += dout(r1.x, r1.y, n, r1.z) * f_in_bound(r1.x * stride + x - pad, r1.y * stride + y - pad, z, r1.z);
-
-            // intialize to zero
-            db(x) = 0.f;
+            dW(x, y, z, n) = cast(dout.output_types()[0], 0.f);
+            dW(x, y, z, n) += dout(r1.x, r1.y, n, r1.z) * f_in_bound(r1.x*stride + x - pad,
+                                                                     r1.y*stride + y - pad,
+                                                                     z, r1.z);
+            // initialize to zero
+            db(x) = cast(dout.output_types()[0], 0);
             db(x) += dout(r1.x, r1.y, x, r1.z);
 
+            RDom r2(0, f_w, 0, f_h, 0, num_f);
+
+            // initialize to zero
+            in_grad(x, y, z, n) = cast(dout.output_types()[0], 0);
+            in_grad(x, y, z, n) += dout(x, y, r2.z, n) * W(r2.x, r2.y, z, r2.z);
+
             if (schedule) {
-                // put schedule here (if scheduling layers independently)
-                Var fused, x_inner, y_inner, x_outer, y_outer;
-                // d_in_bound.compute_root();
-
-                dW.compute_root();
-                dW.fuse(z,n, fused).parallel(fused).vectorize(x, 8 , TailStrategy::GuardWithIf);
-                dW.update().reorder(x, y, z, n, r1.z).parallel(n);
-
+                dW.compute_root().parallel(n).parallel(z);//.vectorize(x, 8);
+                dW.update().parallel(n).parallel(z);//.vectorize(x, 8);
                 db.compute_root();
-                db.parallel(x);
-                db.update().parallel(x);
-
-                in_grad.compute_root();
-                in_grad.fuse(z, n, fused).parallel(fused).vectorize(x, 8 , TailStrategy::GuardWithIf);
-                in_grad.update().fuse(z, n, fused).parallel(fused).vectorize(x, 8 , TailStrategy::GuardWithIf);
-                in_grad.update().tile(x, y, x_outer, y_outer, x_inner, y_inner, 16, 16, TailStrategy::GuardWithIf).reorder(x_inner, y_inner, x_outer, y_outer, r3.z);
+                in_grad.compute_root().parallel(n).parallel(z).vectorize(x, 8);
+                in_grad.update().parallel(n).parallel(z).vectorize(x, 8);
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -697,21 +711,35 @@ class SoftMax: public Layer {
             // Code should define forward(in_dim, n) = ...
             ////////////////////////////////////////////////////////////////////
             // forward(in_dim, n) = 0.f;
-            Func exp_max, expo, normalizer;
+
+            num_classes = inputs[0]->out_dim_size(0);
+            num_samples = inputs[0]->out_dim_size(1);
+
+            Func exp_max(name + "_exp_max");
+            Func expo(name + "_expo");
+            Func normalizer(name + "_normalizer");
+
             RDom r(0, num_classes);
+            printf("num_samples %d\n", num_samples);
             exp_max(n) = maximum(in_f(r.x, n));
             expo(in_dim, n) = exp(in_f(in_dim, n) - exp_max(n));
+
             normalizer(n) = cast(in_f.output_types()[0], 0);
             normalizer(n) += expo(r.x, n);
+
             forward(in_dim, n) = expo(in_dim, n)/normalizer(n);
 
             if (schedule) {
                 // put schedule here (if scheduling layers independently)
-                exp_max.compute_at(forward, n);
-                expo.compute_at(forward, n);
-                normalizer.compute_at(forward, n);
-                forward.compute_root().parallel(n);
+                // exp_max.compute_at(forward, n);
+                // expo.compute_at(forward, n);
+                // normalizer.compute_at(forward, n);
+                // forward.compute_root().parallel(n);
                 // forward.compute_root();
+                exp_max.compute_root();
+                normalizer.compute_root();
+                forward.compute_root();
+            
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -738,9 +766,12 @@ class SoftMax: public Layer {
             // Note there are no parameter derivatives since the
             // softMax has no learnable parameters.
             ////////////////////////////////////////////////////////////////////
-            Expr label = clamp(labels(n), 0, num_classes -1);
+
+
+            Expr label = clamp(labels(n), 0, num_classes - 1);
             Expr t = (forward(in_dim, n) - 1)/num_samples;
             Expr f = (forward(in_dim, n)/num_samples);
+
             in_grad(in_dim, n) = select(in_dim == label, t, f);
 
             if (schedule) {
