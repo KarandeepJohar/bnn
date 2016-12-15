@@ -714,12 +714,12 @@ void ToyNet::define_forward(int batch_size, int data_width, int data_height) {
     ReLU *relu1 = new ReLU("relu1", conv1);
     layer_list.push_back(relu1);
 
-    Bilateral *bil1  = new Bilateral("bil1", num_filters,
+    Convolutional *conv2  = new Convolutional("conv2", num_filters,
                                                filter_width, filter_height, pad,
                                                stride, relu1);
-    layer_list.push_back(bil1);
+    layer_list.push_back(conv2);
 
-    ReLU *relu2 = new ReLU("relu2", bil1);
+    ReLU *relu2 = new ReLU("relu2", conv2);
     layer_list.push_back(relu2);
 
     int p_w = 2; // pooling width
@@ -756,10 +756,11 @@ void ToyNet::define_backward(Image<int> labels) {
     layers["flatten"]->define_gradients(layers["fc"]->f_input_grads[0]);
     layers["pool1"]->define_gradients(layers["flatten"]->f_input_grads[0]);
     layers["relu2"]->define_gradients(layers["pool1"]->f_input_grads[0]);
-    layers["bil1"]->define_gradients(layers["relu2"]->f_input_grads[0]);
-    layers["relu1"]->define_gradients(layers["bil1"]->f_input_grads[0]);
+    layers["conv2"]->define_gradients(layers["relu2"]->f_input_grads[0]);
+    layers["relu1"]->define_gradients(layers["conv2"]->f_input_grads[0]);
     layers["conv1"]->define_gradients(layers["relu1"]->f_input_grads[0]);
 }
+
 
 class TileNet: public Network {
     public:
